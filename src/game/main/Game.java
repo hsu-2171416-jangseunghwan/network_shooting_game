@@ -1,0 +1,1274 @@
+package game.main;
+
+import java.awt.Color;
+import java.awt.Graphics2D;
+import java.awt.Image;
+import java.awt.Rectangle;
+import java.awt.event.KeyEvent;
+import java.awt.geom.AffineTransform;
+import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
+
+import game.bosseffect.BigExplosion;
+import game.entity.BossSingle;
+import game.entity.Bullet;
+import game.entity.Enemy;
+import game.entity.Player;
+import game.enumset.BulletType;
+import game.enumset.EnemyKind;
+import game.enumset.GameState;
+import game.enumset.MenuOption;
+import game.enumset.PlayerIndex;
+import game.manager.AudioManager;
+import game.manager.EntityManager;
+import game.manager.ResourceManager;
+import game.manager.StageManager;
+import game.mode.LocalCoopConfig;
+import game.movement.LinearMove;
+import game.network.NetBullet;
+import game.network.NetworkClient;
+import game.stage.AbstractStage;
+import game.stage.Stage1;
+import game.stage.Stage2;
+import game.stage.Stage3Boss;
+import game.status.RunStats;  // ★ 한 판 동안의 통계 저장용
+import game.ui.GameTheme;
+import game.ui.PausePanel;
+import game.ui.UIManager;
+import game.weapon.LinearFire;
+import game.weapon.Weapon;
+
+
+class NetEnemy {
+    int id;
+    double x, y;
+    int hp;
+    String type;
+}
+
+public class Game {
+
+	private HashMap<Integer, NetEnemy> netEnemies = new HashMap<>();
+    private GameState state = GameState.MENU;
+    private MenuOption selected = MenuOption.SINGLE;
+
+    private final ResourceManager rm = new ResourceManager();
+    private final EntityManager entityManager = new EntityManager();
+    private UIManager uiManager;
+    
+ // 🔥 내 입력 상태 (서버로 보낼 값)
+    private int inputX = 0;
+    private int inputY = 0;
+    private int inputFire = 0;
+    
+ // 🔥 내 플레이어 ID (서버가 알려줌)
+    private int myPlayerId = -1;
+
+    // 🔥 네트워크 클라이언트 객체
+    private NetworkClient network;
+    
+    // ★ 이번 플레이(한 판) 동안의 통계를 저장하는 객체
+    private final RunStats runStats = new RunStats();
+    
+    private PausePanel pausePanel;
+    
+    private final LocalCoopConfig coopConfig = LocalCoopConfig.defaultCoop(); // ★ 추가
+    private StageManager stageManager;
+    private Player player;   // P1
+    private Player player2;  // P2
+    private static boolean coopMode = true;
+    private int gameOverSelectedIndex = 0; // 0=Restart, 1=Exit
+
+    private Image bg;
+    private int bgY = 0;
+
+    private final Rectangle playArea = new Rectangle(0, 0, 500, 800);
+
+    // READY COUNTDOWN
+    private long readyStartTime = 0;
+    private int countdown = 3;
+    private int stageToStart = 0;
+    
+    private int gameOverIndex = 0;
+    
+ // 🔥 멀티 전용 보스 QTE 상태
+    private boolean coopQteActive = false;      // QTE 진행 중인지
+    private boolean coopQteFinished = false;    // 한 번 끝났는지(재발동 방지)
+    private long coopQteStartTime = 0L;         // 시작 시간
+    private int coopQteDurationMs = 2000;       // QTE 유지 시간 (2초)
+
+    private int coopQteP1Taps = 0;             // P1 연타 횟수
+    private int coopQteP2Taps = 0;             // P2 연타 횟수
+
+    // 조건 값들 (필요하면 나중에 조절 가능)
+    private double coopQteHpThreshold = 0.3;   // 보스 HP 30% 이하에서 발동
+    private int coopQteRequiredTaps = 3;      // 각 플레이어 최소 연타 수
+    
+    // 🔥 화면 흔들림 연출용 필드
+    private long screenShakeUntil = 0L;          // 흔들림이 끝나는 시각(밀리초)
+    private int screenShakeMagnitude = 10;       // 흔들림 세기(픽셀)
+    private final Random shakeRng = new Random(); // 랜덤 오프셋 생성용
+
+
+    private boolean finalClear = false;  // 마지막 스테이지 클리어 여부
+
+    private boolean resumeFromPause = false;
+    
+    private AudioManager audio = new AudioManager();
+    
+    private List<String> pendingEnemySpawns = new ArrayList<>();
+    
+    private ConcurrentHashMap<Integer, NetBullet> netBullets = new ConcurrentHashMap<>();
+    
+    public Game() {
+        bg = rm.getImage("background");
+        entityManager.setCoopConfig(coopConfig);   // ★ 충돌 시스템에 코옵 설정 연결
+        
+        audio.playBGM("menu_music.wav");
+        pausePanel = new PausePanel(runStats, rm);
+        //network = new NetworkClient(this, "127.0.0.1", 30000);
+    }
+
+ // ============================================================
+ // UPDATE
+ // ============================================================
+ public void update(long dt) {
+
+     // ───────── PAUSED 상태 ─────────
+     if (state == GameState.PAUSED) {
+
+         // 카운트다운 중이면 숫자만 렌더링, 게임 논리 업데이트는 모두 중지
+         if (pausePanel.isCounting()) {
+
+        	 if (pausePanel.isCountdownFinished()) {
+        		    pausePanel.stopCountdown();
+        		    pausePanel.hide();
+
+        		    // 🔥 ESC → RESUME 후 재개해야 하는 경우
+        		    if (resumeFromPause) {
+        		        uiManager.getHud().resumeTimer(); // ★ 타이머 재개
+        		        resumeFromPause = false;          // 플래그 초기화
+        		    }
+
+        		    state = GameState.RUNNING;   // 게임 재개
+        		    return;
+        		}
+
+             return; // 카운트다운 중엔 모든 업데이트 중지
+         }
+
+         return; // 선택 메뉴 상태 — 업데이트 중지
+     }
+
+     // ───────── READY 상태 (3,2,1 카운트) ─────────
+     if (state == GameState.READY) {
+
+         long elapsed = (System.currentTimeMillis() - readyStartTime) / 1000;
+         countdown = Math.max(0, 3 - (int) elapsed);
+
+         // 3초 이하에서는 게임 진행 X
+         if (elapsed < 4) {
+             return;
+         }
+         
+
+         // 스테이지 시작 (처음 플레이 or 스테이지 넘어갈 때)
+         if (elapsed >= 4) {
+             if (stageToStart == 1) startStage1();
+             else if (stageToStart == 2) startStage2();
+             else if (stageToStart == 3) startStage3();
+
+             state = GameState.RUNNING;
+         }
+
+         return;
+     }
+
+     // ───────── RUNNING 상태만 게임 논리 업데이트 ─────────
+     if (state == GameState.RUNNING) {
+
+    	 if (network != null && myPlayerId != -1) {
+    	        network.sendInput(myPlayerId, inputX, inputY, inputFire);
+    	    }
+    	 
+         // 결과창 떠있으면 멈춤
+         if (uiManager != null && uiManager.isResultVisible())
+             return;
+
+         // 🔥 QTE 처리
+         handleCoopQte(dt);
+
+         // 스테이지 진행 (QTE 중엔 멈춤)
+         if (stageManager != null && !coopQteActive)
+             stageManager.update(dt);
+
+         // P1 업데이트
+         if (player != null) {
+             player.update(dt);
+             
+             /*
+             List<Bullet> spawned = (List<Bullet>)(List<?>) player.drainSpawned();
+             if (!spawned.isEmpty())
+                 entityManager.addAll(spawned);
+                 */
+         }
+
+         // P2 업데이트
+         if (coopMode && player2 != null && player2.isAlive()) {
+             player2.update(dt);
+
+             /*
+             List<Bullet> spawned2 = (List<Bullet>)(List<?>) player2.drainSpawned();
+             if (!spawned2.isEmpty())
+                 entityManager.addAll(spawned2);
+                 */
+         }
+
+         // 엔티티 전체 업데이트 (Bullets, Enemies, Item 등)
+         entityManager.update(dt);
+
+         // 생존 체크
+         boolean p1Alive = (player != null && player.isAlive());
+         boolean p2Alive = (coopMode && player2 != null && player2.isAlive());
+
+         if (!coopMode) {
+             if (!p1Alive) {
+                 state = GameState.GAME_OVER;
+                 return;
+             }
+         } else {
+             if (!p1Alive && !p2Alive) {
+                 state = GameState.GAME_OVER;
+                 return;
+             }
+         }
+
+         // 시간 종료 → 결과창
+         if (uiManager != null &&
+             uiManager.getHud() != null &&
+             uiManager.getHud().isTimeUp()) {
+
+             uiManager.showResult(
+                     player != null ? player.getScore() : 0,
+                     player != null ? player.getCollectedCount() : 0,
+                     (stageManager != null && stageManager.getCurrentStage() != null)
+                             ? stageManager.getCurrentStage().getStageNumber()
+                             : 0,
+                     60
+             );
+         }
+     }
+ }
+
+ 
+//🔥 멀티 전용 보스 QTE 관리 (HP 30% 이하에서 한 번 발동)
+private void handleCoopQte(long dt) {
+	  // 코옵이 아니면 바로 종료
+    if (!coopMode || stageManager == null) return;
+
+    // 둘 다 살아있을 때만 발동 (한 명 죽었으면 의미 X)
+    if (player == null || player2 == null) return;
+    if (!player.isAlive() || !player2.isAlive()) return;
+
+    // 현재 스테이지가 Stage3Boss가 아니면 무시
+    AbstractStage current = stageManager.getCurrentStage();
+    if (!(current instanceof Stage3Boss bossStage)) return;
+
+    // 보스 객체 가져오기
+    BossSingle boss = bossStage.getBoss();
+    if (boss == null || !boss.isAlive()) return;
+
+    // 이미 한 번 끝난 QTE는 재발동 안 함
+    if (coopQteFinished) return;
+
+    long now = System.currentTimeMillis();
+
+    // 아직 시작 전이면 → HP 조건 보고 시작할지 결정
+    if (!coopQteActive) {
+        double hpRate = boss.getHp() / (double) boss.getMaxHp(); // 현재 HP 비율
+        if (hpRate <= coopQteHpThreshold) {
+            // ⭐ QTE 시작
+            coopQteActive = true;
+            coopQteStartTime = now;
+            coopQteP1Taps = 0;
+            coopQteP2Taps = 0;
+            
+         // 🔥 QTE 텍스트 깜빡임 시작
+            if (uiManager != null) {
+                uiManager.startQteFlash();
+            }
+            
+            System.out.println("[CoopQTE] 합동 공격 QTE 시작!");
+
+            // 화면 안내용 프롬프트
+            //entityManager.add(new game.entity.WavePrompt(
+                   // "⚡ 합동 QTE! P1:E / P2:L 연타!", coopQteDurationMs));
+
+        }
+        return; // 아직 QTE 안 켜졌으면 여기서 종료
+    }
+
+    // 여기까지 왔으면 coopQteActive == true → 진행 중
+
+    // 시간 다 됐는지 체크
+    if (now - coopQteStartTime >= coopQteDurationMs) {
+        coopQteActive = false;
+        coopQteFinished = true; // 한 번만 실행
+        
+     // 🔥 QTE 종료 시 텍스트 깜빡임 끄기
+        if (uiManager != null) {
+            uiManager.stopQteFlash();
+        }
+        
+        System.out.println("[CoopQTE] 탭 결과 - P1:" + coopQteP1Taps + " / P2:" + coopQteP2Taps); // ← 디버그용
+
+        boolean p1Ok = coopQteP1Taps >= coopQteRequiredTaps;
+        boolean p2Ok = coopQteP2Taps >= coopQteRequiredTaps;
+
+        if (p1Ok && p2Ok) {
+            // ✅ 둘 다 성공
+            System.out.println("[CoopQTE] 성공! 보스에게 큰 피해!");
+
+            int damage = (int)(boss.getMaxHp() * 0.2); // 보스 체력 20% 깎기
+            boss.takeDamage(damage);
+            
+            // 🔥 QTE 전용 폭발 이펙트 (보스 중앙에서)
+            double ex = boss.getX() + boss.getW() / 2.0;
+            double ey = boss.getY() + boss.getH() / 2.0;
+            
+         // 여기서 사용하는 Explosion 계열 클래스는
+            // 기존에 '보스 피격'이나 '적 죽을 때' 쓰고 있는 클래스 그대로 써주면 돼.
+            // 예: new BigExplosion(ex, ey) / new SmallExplosion(ex, ey) 등등
+            entityManager.add(new BigExplosion(ex, ey));  // 
+            
+            // 🔥 QTE 성공 연출용 화면 흔들림 (실패보다 조금 더 세고 길게)
+            screenShakeUntil = System.currentTimeMillis() + 1500; // 0.7초 동안 유지
+            screenShakeMagnitude = 14; // 세기(픽셀). 10~20 사이에서 취향대로 조절 가능
+
+            // 성공 메시지
+            entityManager.add(new game.bosseffect.WavePrompt(
+                    "✅ QTE 성공! 보스가 큰 피해를 입었습니다!", 1500));
+
+        } else {
+            // ❌ 실패 or 한 명만 성공
+            System.out.println("[CoopQTE] 실패... 보스가 분노합니다.");
+
+            // 실패 메시지
+            entityManager.add(new game.bosseffect.WavePrompt(
+                    "❌ QTE 실패... 보스가 분노합니다!", 1500));
+            
+            entityManager.add(new game.bosseffect.WavePrompt(
+                    "❌ QTE 실패... 보스가 분노합니다!", 1500));
+
+            // 🔥 여기서 현재 스테이지가 Stage3Boss라면, 분노 모드 트리거
+            if (current instanceof Stage3Boss sb) {
+               sb.onCoopQteFailed();  // 보스에게 "지금 분노해라" 신호 보내기
+            }
+
+            // 가벼운 패널티: 플레이어 둘 다 1뎀 (실패 실감용)
+            if (player.isAlive()) {
+                player.takeDamage(1);
+            }
+            if (player2.isAlive()) {
+                player2.takeDamage(1);
+            }
+            
+            screenShakeUntil = System.currentTimeMillis() + 2000; // 0.5초 동안
+            screenShakeMagnitude = 12; // 흔들림 세기 (원하면 8~20 사이로 조절)
+
+         
+        }
+    }
+}
+
+ 
+
+    // ============================================================
+    // RENDER
+    // ============================================================
+    public void render(Graphics2D g,  int width, int height) {
+    	// 🔥 화면 흔들림용 변환 저장
+        AffineTransform oldTx = g.getTransform();
+
+        // 🔥 현재 시간이 흔들림 유지 시간 안이면 랜덤 오프셋 계산
+        int shakeX = 0;
+        int shakeY = 0;
+        long now = System.currentTimeMillis();
+        if (now < screenShakeUntil) {
+            // -magnitude ~ +magnitude 사이 랜덤 값
+            shakeX = shakeRng.nextInt(screenShakeMagnitude * 2 + 1) - screenShakeMagnitude;
+            shakeY = shakeRng.nextInt(screenShakeMagnitude * 2 + 1) - screenShakeMagnitude;
+
+            // 살짝만 흔들고 싶으면 Y는 줄이고 X만 크게 해도 됨
+            // shakeY /= 2;
+        }
+
+        // 🔥 실제 좌표계 이동 (배경 + 스테이지 + 플레이어 + UI 전부 같이 흔들림)
+        g.translate(shakeX, shakeY);
+        // 배경
+        int h = bg.getHeight(null);
+        g.drawImage(bg, 0, bgY - h, null);
+        g.drawImage(bg, 0, bgY, null);
+
+        // 메뉴 화면
+        if (state == GameState.MENU) {
+            drawMenu(g, width, height);
+            return;
+        }
+
+        // READY 화면
+        if (state == GameState.READY) {
+            drawReady(g, width, height);
+            return;
+        }
+
+        // 스테이지 렌더링
+        if (stageManager != null)
+            stageManager.render(g);
+        
+     // 🔥 서버에서 받은 적 렌더링
+        for (NetEnemy e : netEnemies.values()) {
+
+            BufferedImage img;
+
+            switch (e.type) {
+                case "stage1" -> img = rm.getImage("스테이지1잡몸");
+                case "stage2" -> img = rm.getImage("스테이지2잡몸");
+                case "boss"   -> img = rm.getImage("Boss1");
+                default       -> img = rm.getImage("enemy");
+            }
+
+            int enemyW = 70;
+            int enemyH = 70;
+
+            g.drawImage(img, (int)e.x, (int)e.y, enemyW, enemyH, null);
+
+            // ───────── HP BAR ─────────
+            int maxHp = 100;
+
+            int barW = 50;
+            int barH = 6;
+            int barX = (int)e.x + (enemyW - barW) / 2;
+            int barY = (int)e.y - 10;
+
+            float ratio = Math.max(0f, e.hp / (float)maxHp);
+
+            // 배경
+            g.setColor(new Color(60, 0, 0, 150));
+            g.fillRect(barX, barY, barW, barH);
+
+            // 현재 HP
+            g.setColor(Color.RED);
+            g.fillRect(barX, barY, (int)(barW * ratio), barH);
+        }
+
+
+        
+        // 플레이어 렌더링
+        if (player != null)
+            player.render(g);
+        if (coopMode && player2 != null)
+            player2.render(g);
+
+        // UI 렌더링
+        if (uiManager != null)
+            uiManager.render(g, width, height);
+
+     // GAME OVER or GAME CLEAR
+        if (state == GameState.GAME_OVER) {
+            if (finalClear) {
+                drawGameClear(g);   // 🔹 새로 만들 함수
+            } else {
+                drawGameOver(g);    // 🔹 기존 실패용 화면
+            }
+        }
+        
+        // 🔥 일시정지 UI
+        if (state == GameState.PAUSED && pausePanel != null) {
+            int score = (player != null) ? player.getScore() : 0;
+            pausePanel.setCurrentScore(score);           // 점수 전달
+            pausePanel.render(g, width, height);         // 패널 렌더
+        }
+        
+        for (NetBullet b : netBullets.values()) {
+            g.drawImage(rm.getImage("bullet_basic"), (int)b.x, (int)b.y, null);
+        }
+
+     // 🔥 마지막에 항상 원래 변환으로 되돌리기
+        g.setTransform(oldTx);
+    }
+
+    // ============================================================
+    // READY 화면
+    // ============================================================
+    private void drawReady(Graphics2D g, int width, int height) {
+
+        if (countdown > 0) {
+            g.setFont(GameTheme.COUNTDOWN);
+            g.setColor(GameTheme.ENERGY_YELLOW);
+            GameTheme.drawCentered(g, String.valueOf(countdown), width, height / 2);
+        } else {
+            g.setFont(GameTheme.READY);
+
+            if (coopMode && stageToStart == 3) {
+                g.setColor(GameTheme.NEON_BLUE);
+                GameTheme.drawCentered(g, "BOSS STAGE START!", width, height / 2);
+            } else {
+                g.setColor(GameTheme.NEON_CYAN);
+                GameTheme.drawCentered(
+                        g,
+                        "STAGE " + stageToStart + " START!",
+                        width,
+                        height / 2
+                );
+            }
+        }
+    }
+
+    // ============================================================
+    // 메뉴 UI
+    // ============================================================
+    private void drawMenu(Graphics2D g, int width, int height) {
+
+        g.setColor(new Color(0, 0, 0, 160));
+        g.fillRect(0, 0, width, height);
+
+        g.setFont(GameTheme.TITLE);
+        g.setColor(GameTheme.NEON_CYAN);
+        GameTheme.drawCentered(g, "STELLAR IMPACT", width, 220);
+
+        g.setFont(GameTheme.MENU_OPTION);
+        g.setColor(GameTheme.NEON_CYAN);
+        GameTheme.drawCentered(g, "Coop Mode (2P)", width, 360);
+
+        g.setFont(GameTheme.RESULT_TEXT);
+        g.setColor(new Color(220, 240, 255, 160));
+        GameTheme.drawCentered(g, "Press ENTER to Start", width, 520);
+    }
+
+
+    // ============================================================
+    // GAME OVER UI
+    // ============================================================
+    private void drawGameOver(Graphics2D g) {
+
+        int width = 800;
+        int height = 800;
+
+        // 배경 오버레이
+        g.setColor(new Color(0, 0, 0, 180));
+        g.fillRect(0, 0, width, height);
+
+        // "GAME OVER"
+        g.setFont(GameTheme.TITLE);
+        g.setColor(GameTheme.ALERT_RED);
+        GameTheme.drawCentered(g, "GAME OVER", width, height / 2 - 140);
+
+        // 옵션
+        String[] options = {"Restart", "Exit"};
+        int baseY = height / 2 - 20;
+        int gap = 70;
+
+        g.setFont(GameTheme.SUBTITLE);
+
+        for (int i = 0; i < options.length; i++) {
+
+            boolean highlight = (i == gameOverIndex);
+            int y = baseY + i * gap;
+
+            if (highlight) {
+                // 🔥 메뉴와 동일한 네온 글로우 박스
+                g.setColor(new Color(0, 255, 255, 70));    // 반투명 CYAN
+                g.fillRoundRect(
+                        width / 2 - 160,     // x
+                        y - 40,              // y
+                        320,                 // w
+                        55,                  // h
+                        14, 14
+                );
+
+                g.setColor(GameTheme.ENERGY_YELLOW);       // 강조 텍스트
+            } else {
+                g.setColor(GameTheme.SOFT_WHITE);
+            }
+
+            GameTheme.drawCentered(g, options[i], width, y);
+        }
+    }
+
+    
+ // ============================================================
+    // GAME CLEAR UI (클리어 전용 화면)
+    // ============================================================
+    private void drawGameClear(Graphics2D g) {
+        int width = 800;
+        int height = 800;
+
+        g.setColor(new Color(0, 0, 0, 180));
+        g.fillRect(0, 0, width, height);
+
+        // TITLE
+        g.setFont(GameTheme.TITLE);
+        g.setColor(GameTheme.NEON_BLUE);
+        GameTheme.drawCentered(g, "GAME CLEAR!", width, height / 2 - 140);
+
+        // SCORE
+        int finalScore = (player != null) ? player.getScore() : 0;
+        g.setFont(GameTheme.SUBTITLE);
+        g.setColor(GameTheme.SOFT_WHITE);
+        GameTheme.drawCentered(g, "SCORE : " + finalScore, width, height / 2 - 40);
+
+        // 안내
+        g.setFont(GameTheme.RESULT_TEXT);
+        g.setColor(GameTheme.NEON_CYAN);
+        GameTheme.drawCentered(g, "Press ENTER to return to Title", width, height / 2 + 40);
+    }
+
+    // ============================================================
+    // INPUT
+    // ============================================================
+    public void onKeyPressed(KeyEvent e) {
+        int code = e.getKeyCode();
+
+        // ESC → 일시정지
+        if (code == KeyEvent.VK_ESCAPE) {
+            if (state == GameState.RUNNING) {
+                state = GameState.PAUSED;
+                uiManager.getHud().pauseTimer(); 
+                pausePanel.show();
+                return;
+            }
+            else if (state == GameState.PAUSED) {
+                resumeFromPause = true;
+                pausePanel.startResumeCountdown();
+                return;
+            }
+        }
+
+        // ───────── PAUSED 상태 ─────────
+        if (state == GameState.PAUSED) {
+
+            // ↑ ↓ 이동
+            if (code == KeyEvent.VK_UP || code == KeyEvent.VK_W) {
+                pausePanel.moveUp();
+                return;
+            }
+            if (code == KeyEvent.VK_DOWN || code == KeyEvent.VK_S) {
+                pausePanel.moveDown();
+                return;
+            }
+
+            // Enter → 실행
+            if (code == KeyEvent.VK_ENTER) {
+
+                int selected = pausePanel.getSelectedIndex();
+
+                // 0 = RESUME
+                if (selected == 0) { // RESUME
+                    resumeFromPause = true;
+                    pausePanel.startResumeCountdown();  // 🔥 패널 카운트다운 시작
+                    return;
+                }
+
+                // 1 = MENU
+                if (selected == 1) {
+                    entityManager.clearAll();
+                    stageManager = null;
+                    player = null;
+                    player2 = null;
+                    runStats.reset();
+
+                    pausePanel.hide();
+                    state = GameState.MENU;
+                    audio.playBGM("menu_music.wav");
+                    return;
+                }
+            }
+        }
+
+        // ───────── 메뉴 ─────────
+        if (state == GameState.MENU) {
+
+            // ENTER → 항상 COOP 모드로 시작
+        	 if (code == KeyEvent.VK_ENTER) {
+
+        	        // 🔥 서버에게 준비 완료 신호를 보낸다
+        	        if (network != null) {
+        	            network.send("/ready");
+        	        }
+
+        	        System.out.println("[Client] READY 전송");
+        	    }
+
+        	    return;
+        	}
+
+
+        // ───────── 결과창 ─────────
+     // ───────── 결과창 ─────────
+        if (uiManager != null && uiManager.isResultVisible()) {
+
+            if (code == KeyEvent.VK_ENTER) {
+
+                uiManager.hideResult();
+
+                // 현재 스테이지 번호 확인
+                int clearedStage = stageManager.getCurrentStage().getStageNumber();
+
+                // 🔥 서버에 Stage Clear 전송
+                if (network != null) {
+                    network.send("/clear/" + clearedStage);
+                    System.out.println("[Client] STAGE CLEAR 전송 → " + clearedStage);
+                }
+
+                // 🚫 startReadyCountdown(next) 호출 금지!!
+                // 서버가 "/stage/start/{next}" 패킷을 보내줄 때까지 대기
+
+                return;
+            }
+
+            return;
+        }
+
+
+        // ───────── 게임 중 ─────────
+        if (state == GameState.RUNNING) {
+
+            // QTE 처리 (그대로 유지)
+            if (coopQteActive) {
+                handleCoopQteKeyInput(code);
+            }
+
+            // =======================================
+            // 🔥 1) 내 입력 상태 갱신 (서버 전송용)
+            // =======================================
+            if (code == KeyEvent.VK_LEFT)  inputX = -1;
+            if (code == KeyEvent.VK_RIGHT) inputX = 1;
+            if (code == KeyEvent.VK_UP)    inputY = -1;
+            if (code == KeyEvent.VK_DOWN)  inputY = 1;
+
+            if (code == KeyEvent.VK_SPACE || code == KeyEvent.VK_O)
+                inputFire = 1;
+
+            // 서버로 전송
+            if (network != null && myPlayerId != -1)
+                network.sendInput(myPlayerId, inputX, inputY, inputFire);
+
+            // =======================================
+            // 🔥 2) 로컬 내 플레이어에도 즉시 반영
+            // =======================================
+            if (myPlayerId == 1 && player != null) {
+                if (code == KeyEvent.VK_LEFT)  player.moveLeft();
+                if (code == KeyEvent.VK_RIGHT) player.moveRight();
+                if (code == KeyEvent.VK_UP)    player.moveUp();
+                if (code == KeyEvent.VK_DOWN)  player.moveDown();
+                //if (code == KeyEvent.VK_SPACE) player.shoot();
+            }
+
+            if (myPlayerId == 2 && player2 != null) {
+                if (code == KeyEvent.VK_LEFT)  player2.moveLeft();
+                if (code == KeyEvent.VK_RIGHT) player2.moveRight();
+                if (code == KeyEvent.VK_UP)    player2.moveUp();
+                if (code == KeyEvent.VK_DOWN)  player2.moveDown();
+                //if (code == KeyEvent.VK_SPACE) player2.shoot();
+            }
+
+            return;
+        }
+
+
+        // ───────── GAME OVER ─────────
+        if (state == GameState.GAME_OVER) {
+
+        	
+        	// ✅ 클리어 상태일 때: ENTER 한 번으로 타이틀 복귀
+            if (finalClear) {
+                if (code == KeyEvent.VK_ENTER) {
+                    // 싹 정리하고 메뉴로
+                    entityManager.clearAll();
+                    stageManager = null;
+                    player = null;
+                    player2 = null;
+                    runStats.reset();
+
+                    finalClear = false;       // 다음 판을 위해 초기화
+                    state = GameState.MENU;
+                }
+                return;
+            }
+           
+            // ↑/↓ 또는 W/S 로 선택 변경
+
+
+
+            if (code == KeyEvent.VK_UP || code == KeyEvent.VK_W ||
+                code == KeyEvent.VK_DOWN || code == KeyEvent.VK_S) {
+
+                gameOverIndex = (gameOverIndex == 0 ? 1 : 0);
+            }
+
+            else if (code == KeyEvent.VK_ENTER) {
+
+                if (gameOverIndex == 0) {
+
+                    entityManager.clearAll();
+                    stageManager = null;
+                    player = null;
+                    player2 = null;
+                    runStats.reset();
+
+                    state = GameState.MENU;
+                } else {
+                    System.exit(0);
+                }
+            }
+
+            return;
+        }
+    }
+    
+ // 🔥 QTE 중일 때 키 입력 처리 (P1: E, P2: L)
+    private void handleCoopQteKeyInput(int code) {
+        if (code == KeyEvent.VK_E) {
+            // P1용 QTE 키
+            coopQteP1Taps++;
+            // System.out.println("P1 탭: " + coopQteP1Taps);
+        } else if (code == KeyEvent.VK_L) {
+            // P2용 QTE 키
+            coopQteP2Taps++;
+            // System.out.println("P2 탭: " + coopQteP2Taps);
+        }
+    }
+
+    public void onKeyReleased(KeyEvent e) {
+        int code = e.getKeyCode();
+
+        if (state != GameState.RUNNING) return;
+
+        // =======================================
+        // 🔥 1) 내 입력 상태 초기화
+        // =======================================
+        if (code == KeyEvent.VK_LEFT || code == KeyEvent.VK_RIGHT)
+            inputX = 0;
+
+        if (code == KeyEvent.VK_UP || code == KeyEvent.VK_DOWN)
+            inputY = 0;
+
+        if (code == KeyEvent.VK_SPACE || code == KeyEvent.VK_O)
+            inputFire = 0;
+
+        // 서버로 전송
+        if (network != null && myPlayerId != -1)
+            network.sendInput(myPlayerId, inputX, inputY, inputFire);
+
+        // =======================================
+        // 🔥 2) 로컬에서도 내 캐릭터 정지 처리
+        // =======================================
+        if (myPlayerId == 1 && player != null) {
+            if (code == KeyEvent.VK_LEFT || code == KeyEvent.VK_RIGHT)
+                player.stopX();
+
+            if (code == KeyEvent.VK_UP || code == KeyEvent.VK_DOWN)
+                player.stopY();
+        }
+
+        if (myPlayerId == 2 && player2 != null) {
+            if (code == KeyEvent.VK_LEFT || code == KeyEvent.VK_RIGHT)
+                player2.stopX();
+
+            if (code == KeyEvent.VK_UP || code == KeyEvent.VK_DOWN)
+                player2.stopY();
+        }
+    }
+
+
+    // ============================================================
+    // STAGE READY / START
+    // ============================================================
+    private void startReadyCountdown(int stageNum) {
+        countdown = 3;
+        readyStartTime = System.currentTimeMillis();
+        state = GameState.READY;
+        stageToStart = stageNum;
+        
+        System.out.println("[Game] Stage " + stageNum + " 카운트다운 시작");
+    }
+
+    // ============================================================
+    // STAGE START (Stage1 / Stage2 / Stage3)
+    // ============================================================
+    private void startStage1() {
+    	//runStats.reset();   
+    	// ★ 새 판 시작할 때 통계 0으로 초기화
+    	if (!pendingEnemySpawns.isEmpty()) {
+    	    List<String> copy = new ArrayList<>(pendingEnemySpawns);
+    	    pendingEnemySpawns.clear();
+
+    	    for (String packet : copy) {
+    	        onNetworkPacket(packet);
+    	    }
+    	}
+    	
+        setupPlayer();
+        uiManager = new UIManager(player, runStats,rm);
+
+        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+        s1.setNextStage(s2);
+        s2.setNextStage(s3);
+
+        stageManager = new StageManager(s1, uiManager);
+        stageManager.getCurrentStage().start();
+        
+        audio.playBGM("game_music.wav");
+
+        System.out.println("[Game] Stage1 시작");
+    }
+
+    private void startStage2() {
+    	//runStats.reset();             
+    	
+        setupPlayer();
+        uiManager = new UIManager(player, runStats,rm);
+        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+       
+
+        s2.setNextStage(s3);
+
+        stageManager = new StageManager(s2, uiManager);
+        stageManager.getCurrentStage().start();
+        
+        audio.playBGM("game_music.wav");
+
+        System.out.println("[Game] Stage2 시작");
+    }
+
+    private void startStage3() {
+    	audio.stopBGM();
+    	
+        setupPlayer();
+        uiManager = new UIManager(player, runStats,rm);
+
+        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+
+        stageManager = new StageManager(s3, uiManager);
+
+        stageManager.getCurrentStage().start();
+
+        audio.playBGM("boss_stage_music.wav");
+        
+        System.out.println("[Game] Stage3 시작");
+    }
+
+    // ============================================================
+    // PLAYER SETUP
+    // ============================================================
+    private void setupPlayer() {
+
+        entityManager.clearAll();
+
+        int totalWidth = 800;
+        int totalHeight = 800;
+
+        int leftWidth = 150;
+        int rightWidth = 150;
+        int centerWidth = totalWidth - leftWidth - rightWidth;
+
+        playArea.setBounds(leftWidth, 0, centerWidth, totalHeight);
+
+        int startY = totalHeight - 120;
+
+        // ─────────────────────────────
+        // 싱글 모드
+        // ─────────────────────────────
+        if (!coopMode) {
+            int startX = leftWidth + centerWidth / 2 - 24;
+
+            if (player == null) {
+                player = new Player(PlayerIndex.P1)
+                        .withSprite(rm.getImage("player"))
+                        .withPlayArea(playArea)
+                        .withPosition(startX, startY)
+                        .switchWeapon(new Weapon(BulletType.BASIC));
+            } else {
+                player.setPlayArea(playArea);
+                player.setPosition(startX, startY);
+            }
+            
+            player.setEntityManager(entityManager);
+            
+            entityManager.add(player);
+            return;   // 여기서 끝
+        }
+
+        // ─────────────────────────────
+        // 코옵 모드 (P1 + P2)
+        // ─────────────────────────────
+        int gap = 80; // 가운데 기준으로 좌우 간격
+        int p1X = leftWidth + centerWidth / 2 - gap - 24;
+        int p2X = leftWidth + centerWidth / 2 + gap - 24;
+
+        // P1
+        if (player == null) {
+            player = new Player(PlayerIndex.P1)
+                    .withSprite(rm.getImage("player"))
+                    .withPlayArea(playArea)
+                    .withPosition(p1X, startY)
+                    .switchWeapon(new Weapon(BulletType.BASIC));
+        } else {
+            player.setPlayArea(playArea);
+            player.setPosition(p1X, startY);
+        }
+
+        // P2
+        if (player2 == null) {
+            player2 = new Player(PlayerIndex.P2)
+                    .withSprite(rm.getImage("player2"))   // player2.png
+                    .withPlayArea(playArea)
+                    .withPosition(p2X, startY)
+                    .switchWeapon(new Weapon(BulletType.BASIC));
+        } else {
+            player2.setPlayArea(playArea);
+            player2.setPosition(p2X, startY);
+        }
+        
+        // ★ 두 플레이어 모두에 EntityManager 주입
+        player.setEntityManager(entityManager);
+        player2.setEntityManager(entityManager);
+
+        entityManager.add(player);
+        entityManager.add(player2);
+    }
+    
+    // ★ 다른 클래스들(Enemy, UI 등)에서 통계에 접근할 때 쓸 getter
+    public RunStats getRunStats() {
+        return runStats;
+    }
+    
+ // ============================================================
+ // 🔥 멀티플레이 패킷 처리 (서버 → 클라이언트)
+ // ============================================================
+ public void onNetworkPacket(String p) {
+
+     // -------------------------
+     // 플레이어 ID 배정
+     // -------------------------
+	 if (p.startsWith("/setid/")) {
+ 	    try {
+ 	        int id = Integer.parseInt(p.split("/")[2]);
+ 	        myPlayerId = id;  // 🔥 플레이어 ID 저장
+ 	        System.out.println("[NET] My Player ID = " + myPlayerId);
+ 	    } catch (Exception e) { }
+ 	    return;
+ 	}
+
+     // -------------------------
+     // 입력 패킷 처리
+     //   /input/{pid}/{mx}/{my}/{fire}
+     // -------------------------
+     if (p.startsWith("/input/")) {
+         try {
+             String[] t = p.split("/");
+             int pid  = Integer.parseInt(t[2]);
+             int mx   = Integer.parseInt(t[3]);
+             int my   = Integer.parseInt(t[4]);
+             int fire = Integer.parseInt(t[5]);
+
+             Player target = (pid == 1 ? player : player2);
+             if (target != null) {
+                 if (mx < 0) target.moveLeft();
+                 else if (mx > 0) target.moveRight();
+                 else target.stopX();
+
+                 if (my < 0) target.moveUp();
+                 else if (my > 0) target.moveDown();
+                 else target.stopY();
+
+                 //if (fire == 1) target.shoot();
+             }
+         } catch (Exception e) {
+             System.out.println("[NET] INPUT parse error: " + p);
+         }
+         return;
+     }
+     
+  // -------------------------
+  // 적 스폰 패킷 처리
+  // /enemy/spawn/{type}/{x}/{y}
+  // -------------------------
+
+     if (p.startsWith("/enemy/spawn/")) {
+    	    try {
+    	        if (player == null) {
+    	            System.out.println("[NET] player not ready → spawn queued");
+    	            pendingEnemySpawns.add(p);
+    	            return;
+    	        }
+
+    	        String[] t = p.split("/");
+
+    	        int id = Integer.parseInt(t[3]);
+    	        String type = t[4]; // ★ 이 타입 저장해야함!
+    	        double x = Double.parseDouble(t[5]);
+    	        double y = Double.parseDouble(t[6]);
+
+    	        System.out.println("[NET] Enemy spawn: id=" + id +
+    	                           " type=" + type +
+    	                           " x=" + x + " y=" + y);
+
+    	        // -----------------------------------------
+    	        // ★ 서버에서 온 적을 NetEnemy로 저장
+    	        // -----------------------------------------
+    	        NetEnemy ne = new NetEnemy();
+    	        ne.id = id;
+    	        ne.type = type; // ★ 추가된 필드에 저장
+    	        ne.x = x;
+    	        ne.y = y;
+    	        ne.hp = 100; // 기본값 (원하면 서버에서 보낼 수 있음)
+
+    	        netEnemies.put(id, ne);
+
+    	    } catch (Exception ex) {
+    	        ex.printStackTrace();
+    	        System.out.println("[NET] spawn parse error: " + p);
+    	    }
+    	    return;
+    	}
+
+
+
+
+     // -------------------------
+     // 상태 패킷 처리
+     // -------------------------
+     if (p.startsWith("/state/")) {
+         String stateName = p.substring(7);
+
+         switch (stateName) {
+             case "MENU" -> state = GameState.MENU;
+             case "READY" -> state = GameState.READY;
+             case "PLAY" -> state = GameState.RUNNING;
+         }
+         return;
+     }
+
+     // -------------------------
+     // 스테이지 시작 패킷
+     // -------------------------
+     if (p.startsWith("/stage/start/")) {
+    	 coopMode = true;
+         try {
+             int stage = Integer.parseInt(p.split("/")[3]);
+             startReadyCountdown(stage);
+         } catch (Exception e) { }
+         return;
+     }
+     
+     if (p.startsWith("/gameclear")) {
+    	    finalClear = true;
+    	    state = GameState.GAME_OVER;  // 또는 별도의 CLEAR 화면 로직
+    	    return;
+    	}
+
+     if (p.startsWith("/enemy/pos/")) {
+    	    String[] t = p.split("/");
+
+    	    int id = Integer.parseInt(t[3]);
+    	    double x = Double.parseDouble(t[4]);
+    	    double y = Double.parseDouble(t[5]);
+
+    	    NetEnemy ne = netEnemies.get(id);
+    	    if (ne != null) {
+    	        ne.x = x;
+    	        ne.y = y;
+    	    }
+    	    return;
+    	}
+
+     if (p.startsWith("/bullet/spawn/")) {
+    	    String[] t = p.split("/");
+    	    int id = Integer.parseInt(t[3]);
+    	    int owner = Integer.parseInt(t[4]);
+    	    double x = Double.parseDouble(t[5]);
+    	    double y = Double.parseDouble(t[6]);
+
+    	    NetBullet b = new NetBullet(id, x, y, owner);
+    	    netBullets.put(id, b);
+    	    return;
+    	}
+     
+     if (p.startsWith("/bullet/pos/")) {
+    	    String[] t = p.split("/");
+
+    	    int id = Integer.parseInt(t[3]);
+    	    double x = Double.parseDouble(t[4]);
+    	    double y = Double.parseDouble(t[5]);
+
+    	    NetBullet b = netBullets.get(id);
+    	    if (b != null) {
+    	        b.x = x;
+    	        b.y = y;
+    	    }
+    	    return;
+    	}
+     
+     if (p.startsWith("/enemy/hp/")) {
+    	    String[] t = p.split("/");
+    	    int id = Integer.parseInt(t[3]);
+    	    int hp = Integer.parseInt(t[4]);
+
+    	    NetEnemy ne = netEnemies.get(id);
+    	    if (ne != null) ne.hp = hp;
+
+    	    return;
+    	}
+     
+     if (p.startsWith("/enemy/dead/")) {
+    	    int id = Integer.parseInt(p.split("/")[3]);
+    	    netEnemies.remove(id);
+    	    return;
+    	}
+     
+     if (p.startsWith("/bullet/remove/")) {
+    	    int id = Integer.parseInt(p.split("/")[3]);
+    	    netBullets.remove(id);
+    	    return;
+    	}
+     
+     if (p.startsWith("/player/pos/")) {
+    	    String[] t = p.split("/");
+    	    int pid = Integer.parseInt(t[3]);
+    	    double x = Double.parseDouble(t[4]);
+    	    double y = Double.parseDouble(t[5]);
+
+    	    Player target = (pid == 1 ? player : player2);
+    	    if (target != null) {
+    	        target.setNetworkPosition(x, y); // 새로 만들기
+    	    }
+    	    return;
+    	}
+     
+     System.out.println("[NET] Unknown packet: " + p);
+ }
+ 
+ 	public void setNetwork(NetworkClient network) {
+	    this.network = network;
+	}
+ 	
+ 	public static boolean isMultiplayer() {
+ 	    return coopMode; 
+ 	}
+
+    
+    
+    
+}
