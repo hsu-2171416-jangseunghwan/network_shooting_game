@@ -157,7 +157,9 @@ public class Server {
 
                         // 두 명 모두 클리어했을 때만 다음 스테이지 진행
                         if (clear1 && clear2) {
-
+                        	clearAllEnemies();
+                        	clearAllBullets();
+                        	
                             if (clearedStage == 1) {
                                 broadcast("/stage/start/2");
                                 System.out.println(">>> Stage2 시작");
@@ -402,8 +404,22 @@ public class Server {
 
         broadcast("/bullet/spawn/" + id + "/" + pid + "/" + px + "/" + py);
     }
-
     
+    private void clearAllEnemies() {
+        for (int id : enemies.keySet()) {
+            broadcast("/enemy/dead/" + id);
+        }
+        enemies.clear();
+        System.out.println("[SERVER] All enemies cleared.");
+    }
+
+    private void clearAllBullets() {
+        for (int id : bullets.keySet()) {
+            broadcast("/bullet/remove/" + id);
+        }
+        bullets.clear();
+        System.out.println("[SERVER] All bullets cleared.");
+    }
     public static void main(String[] args) throws Exception {
         new Server(30000);
     }
