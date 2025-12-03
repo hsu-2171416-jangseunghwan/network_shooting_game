@@ -709,7 +709,6 @@ private void handleCoopQte(long dt) {
 
 
         // ───────── 결과창 ─────────
-     // ───────── 결과창 ─────────
         if (uiManager != null && uiManager.isResultVisible()) {
 
             if (code == KeyEvent.VK_ENTER) {
@@ -915,7 +914,8 @@ private void handleCoopQte(long dt) {
     	
         setupPlayer();
         uiManager = new UIManager(player, runStats,rm);
-
+        uiManager.getHud().resetTimer();
+        
         AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
         AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
         AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
@@ -935,6 +935,7 @@ private void handleCoopQte(long dt) {
     	
         setupPlayer();
         uiManager = new UIManager(player, runStats,rm);
+        uiManager.getHud().resetTimer();
         AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
         AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
         AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
@@ -955,7 +956,8 @@ private void handleCoopQte(long dt) {
     	
         setupPlayer();
         uiManager = new UIManager(player, runStats,rm);
-
+        uiManager.getHud().resetTimer();
+        
         AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
         AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
         AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);

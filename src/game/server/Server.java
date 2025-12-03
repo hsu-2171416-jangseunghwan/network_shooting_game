@@ -150,9 +150,18 @@ public class Server {
                             clearAllEnemies();
                             clearAllBullets();
 
-                            if (clearedStage == 1) broadcast("/stage/start/2");
-                            else if (clearedStage == 2) broadcast("/stage/start/3");
-                            else if (clearedStage == 3) broadcast("/gameclear");
+                            if (clearedStage == 1) {
+                                broadcast("/stage/start/2");
+                                currentStage = 2;              // ★ Stage2 플래그 설정
+                                startStage2Spawning();         // ★ Stage2 적 스폰 시작
+                            }
+                            else if (clearedStage == 2) {
+                                broadcast("/stage/start/3");
+                                currentStage = 3;
+                            }
+                            else if (clearedStage == 3) {
+                                broadcast("/gameclear");
+                            }
 
                             clear1 = clear2 = false;
                         }
@@ -216,7 +225,66 @@ public class Server {
             } catch (Exception ignore) {}
         }).start();
     }
+    
+ // ==========================================================
+ // 🔥 Stage2 스폰 시작
+ // ==========================================================
+ private void startStage2Spawning() {
 
+     new Thread(() -> {
+         long lastSpawn = System.currentTimeMillis();
+
+         while (currentStage == 2) {
+
+             long now = System.currentTimeMillis();
+
+             // 매 1.2초마다 Stage2 적 스폰
+             if (now - lastSpawn > 1200) {
+                 spawnStage2Enemy();
+                 lastSpawn = now;
+             }
+
+             // Stage1 잡몹 섞어서 스폰
+             if (rand.nextInt(100) < 20) {  // 20% 확률
+                 spawnStage1EnemyForStage2();
+             }
+
+             try { Thread.sleep(50); } catch(Exception e) {}
+         }
+
+     }).start();
+ }
+
+//==========================================================
+//🔥 Stage2에서 Stage1 잡몹 스폰
+//==========================================================
+private void spawnStage1EnemyForStage2() {
+
+  double x = 50 + rand.nextInt(400);
+  double y = -120;
+
+  int id = nextEnemyId++;
+
+  EnemyState e = new EnemyState(id, x, y, 100);
+  enemies.put(id, e);
+
+  broadcast("/enemy/spawn/" + id + "/stage1/" + x + "/" + y);
+}
+
+private void spawnStage2Enemy() {
+
+    double x = 50 + rand.nextInt(380);
+    double y = -150;
+
+    int id = nextEnemyId++;
+
+    EnemyState e = new EnemyState(id, x, y, 100);
+    e.speedY = 120;
+    enemies.put(id, e);
+
+    broadcast("/enemy/spawn/" + id + "/stage2/" + x + "/" + y);
+}
+ 
     private void spawnEnemyStage1() {
         int id = nextEnemyId++;
         double x = 100 + rand.nextInt(300);
@@ -228,6 +296,28 @@ public class Server {
         broadcast("/enemy/spawn/" + id + "/stage1/" + x + "/" + y);
     }
 
+    private void stage2EnemyAttack(EnemyState e) {
+
+        int type = rand.nextInt(3);
+
+        if (type == 0) {
+            // Linear
+            spawnEnemyBullet(e, 0, 200);
+        }
+        else if (type == 1) {
+            // Triple fire
+            spawnEnemyBullet(e, -0.3, 200);
+            spawnEnemyBullet(e, 0,    200);
+            spawnEnemyBullet(e, 0.3,  200);
+        }
+        else {
+            // ArcSpreadFire
+            for (int i = -2; i <= 2; i++) {
+                spawnEnemyBullet(e, i * 0.25, 200);
+            }
+        }
+    }
+    
     private void startServerLoop() {
         new Thread(() -> {
             long last = System.currentTimeMillis();
@@ -262,8 +352,26 @@ public class Server {
 
     private void updateEnemies(long dt) {
         double sec = dt / 1000.0;
+        long now = System.currentTimeMillis();
+
+        double zigzagAmp = 40;
 
         for (EnemyState e : enemies.values()) {
+
+            // Stage2 이동 + 공격
+            if (currentStage == 2) {
+
+                // 🔹 Zigzag 이동
+                double dx = Math.sin((now + e.id * 500) / 300.0) * zigzagAmp * sec;
+                e.x += dx;
+
+                // 🔹 공격 (5% 확률)
+                if (rand.nextInt(100) < 5) {
+                    stage2EnemyAttack(e);
+                }
+            }
+
+            // Stage1 or Stage2 공통 하강
             e.y += e.speedY * sec;
 
             if (e.y > 900) {
@@ -275,6 +383,21 @@ public class Server {
         }
     }
 
+
+
+    private void spawnEnemyBullet(EnemyState e, double dir, double speed) {
+
+        int id = nextBulletId++;
+
+        double vx = dir * speed;
+        double vy = speed;
+
+        BulletState b = new BulletState(id, -1, e.x, e.y + 20, vx, vy);
+        bullets.put(id, b);
+
+        broadcast("/bullet/spawn/" + id + "/enemy/" + e.x + "/" + e.y);
+    }
+    
     private void updateBullets(double dt) {
         for (BulletState b : bullets.values()) {
             b.x += b.vx * dt;
