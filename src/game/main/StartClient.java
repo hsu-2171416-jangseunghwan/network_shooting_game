@@ -13,7 +13,7 @@ public class StartClient {
         GamePanel panel = new GamePanel(game);
 
         // 3) Swing 윈도우 구성
-        JFrame frame = new JFrame("Stellar Impact - Client");
+        JFrame frame = new JFrame("CROSSDUO - Client");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.add(panel);
         frame.pack();

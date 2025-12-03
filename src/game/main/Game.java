@@ -124,6 +124,10 @@ public class Game {
     
     private ConcurrentHashMap<Integer, NetBullet> netBullets = new ConcurrentHashMap<>();
     
+    private int currentNetworkStage = 1;
+    
+    
+    
     public Game() {
         bg = rm.getImage("background");
         entityManager.setCoopConfig(coopConfig);   // ★ 충돌 시스템에 코옵 설정 연결
@@ -716,7 +720,7 @@ private void handleCoopQte(long dt) {
                 uiManager.hideResult();
 
                 // 현재 스테이지 번호 확인
-                int clearedStage = stageManager.getCurrentStage().getStageNumber();
+                int clearedStage = currentNetworkStage;
 
                 // 🔥 서버에 Stage Clear 전송
                 if (network != null) {
@@ -730,7 +734,6 @@ private void handleCoopQte(long dt) {
                 return;
             }
 
-            return;
         }
 
 
@@ -901,75 +904,67 @@ private void handleCoopQte(long dt) {
     // STAGE START (Stage1 / Stage2 / Stage3)
     // ============================================================
     private void startStage1() {
-    	//runStats.reset();   
-    	// ★ 새 판 시작할 때 통계 0으로 초기화
-    	if (!pendingEnemySpawns.isEmpty()) {
-    	    List<String> copy = new ArrayList<>(pendingEnemySpawns);
-    	    pendingEnemySpawns.clear();
 
-    	    for (String packet : copy) {
-    	        onNetworkPacket(packet);
-    	    }
-    	}
-    	
-        setupPlayer();
-        uiManager = new UIManager(player, runStats,rm);
+        // 서버에서 이미 스폰된 적이 있을 수 있으므로 처리
+        if (!pendingEnemySpawns.isEmpty()) {
+            List<String> copy = new ArrayList<>(pendingEnemySpawns);
+            pendingEnemySpawns.clear();
+
+            for (String p : copy) onNetworkPacket(p);
+        }
+
+        setupPlayer(); // 플레이어 배치
+        uiManager = new UIManager(player, runStats, rm);
+        uiManager.getHud().setTotalTime(7);
         uiManager.getHud().resetTimer();
-        
-        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
-        s1.setNextStage(s2);
-        s2.setNextStage(s3);
 
-        stageManager = new StageManager(s1, uiManager);
-        stageManager.getCurrentStage().start();
-        
+        // 🔥 멀티플레이에서는 StageManager 절대 쓰지 않음!!
+        stageManager = null;
+
         audio.playBGM("game_music.wav");
 
-        System.out.println("[Game] Stage1 시작");
+        System.out.println("[Game] Stage1(멀티) 시작 — 로컬 스테이지 OFF");
     }
+
 
     private void startStage2() {
-    	//runStats.reset();             
-    	
-        setupPlayer();
-        uiManager = new UIManager(player, runStats,rm);
+
+        if (player == null) setupPlayer(); 
+        uiManager = new UIManager(player, runStats, rm);
+        uiManager.getHud().setTotalTime(15);
         uiManager.getHud().resetTimer();
-        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
-       
 
-        s2.setNextStage(s3);
+        // ★★ 추가: Stage2 도 pending spawn 적용
+        if (!pendingEnemySpawns.isEmpty()) {
+            List<String> copy = new ArrayList<>(pendingEnemySpawns);
+            pendingEnemySpawns.clear();
+            for (String p : copy) onNetworkPacket(p);
+        }
 
-        stageManager = new StageManager(s2, uiManager);
-        stageManager.getCurrentStage().start();
-        
+        stageManager = null;
         audio.playBGM("game_music.wav");
 
-        System.out.println("[Game] Stage2 시작");
+        System.out.println("[Game] Stage2(멀티) 시작 — 로컬 스테이지 OFF");
     }
+
+
 
     private void startStage3() {
-    	audio.stopBGM();
-    	
-        setupPlayer();
-        uiManager = new UIManager(player, runStats,rm);
+
+        audio.stopBGM();
+
+        if (player == null) setupPlayer(); 
+        uiManager = new UIManager(player, runStats, rm);
         uiManager.getHud().resetTimer();
-        
-        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
 
-        stageManager = new StageManager(s3, uiManager);
-
-        stageManager.getCurrentStage().start();
+        // 🔥 Stage3Boss도 서버 기반이므로 로컬 스테이지 금지
+        stageManager = null;
 
         audio.playBGM("boss_stage_music.wav");
-        
-        System.out.println("[Game] Stage3 시작");
+
+        System.out.println("[Game] Stage3(멀티) 시작 — 로컬 보스 OFF (서버 전용)");
     }
+
 
     // ============================================================
     // PLAYER SETUP
@@ -1170,10 +1165,22 @@ private void handleCoopQte(long dt) {
     	 coopMode = true;
          try {
              int stage = Integer.parseInt(p.split("/")[3]);
+             currentNetworkStage = stage; 
+             
              startReadyCountdown(stage);
          } catch (Exception e) { }
          return;
      }
+     
+     if (p.startsWith("/stage/clear/")) {
+    	    int stage = Integer.parseInt(p.split("/")[3]);
+
+    	    // 결과창 띄움
+    	    uiManager.showResult(0, 0, stage, 60);
+
+    	    currentNetworkStage = stage;
+    	    return;
+    	}
      
      if (p.startsWith("/gameclear")) {
     	    finalClear = true;

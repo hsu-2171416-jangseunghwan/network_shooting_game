@@ -8,12 +8,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-import game.item.ItemDropTable;
 import game.entity.BossSingle;
 import game.entity.Enemy;
 import game.entity.Player;
 import game.enumset.BulletType;
 import game.enumset.EnemyKind;
+import game.item.ItemDropTable;
+import game.main.Game;
 import game.manager.EntityManager;
 import game.manager.ResourceManager;
 import game.movement.LinearMove;
@@ -54,6 +55,9 @@ public class Stage2 extends AbstractStage {
  // ✅ Stage1에서 쓰던 잡몹 패턴을 Stage2에서도 쓰기 위한 메서드
     private void spawnStage1Enemies() {
 
+    	if (Game.isMultiplayer()) return;
+    			
+    	/*
         // ⏱ Stage2도 elapsedMs를 가지고 있다고 가정 (Stage1처럼)
         if (elapsedMs % 2000 < 16) {  // 2초 주기 스폰
 
@@ -99,11 +103,15 @@ public class Stage2 extends AbstractStage {
             enemies.add(e);                // 스테이지가 관리하는 잡몹 리스트에 추가
             entityManager.add(e);          // 엔티티 매니저에도 등록 (실제로 그려지고 업데이트됨)
         }
+        */
     }
     
     @Override 
     public void spawnEnemies() {//스테이지2잡몹 소환
 
+    	if (Game.isMultiplayer()) return;
+    	
+    	/*
         if (elapsedMs % 1000 < 16) {
 
             BufferedImage src = resourceManager.getImage("스테이지1잡몸");
@@ -152,6 +160,7 @@ public class Stage2 extends AbstractStage {
             enemies.add(e);
             entityManager.add(e);
         }
+        */
     }
 
     @Override
@@ -160,6 +169,10 @@ public class Stage2 extends AbstractStage {
         super.update(dt);
         elapsedMs += dt;
 
+        if (Game.isMultiplayer()) return;
+
+        
+        /*
         if (!stageEnded) {
 
             spawnEnemies();
@@ -178,6 +191,7 @@ public class Stage2 extends AbstractStage {
                 nextStage = new Stage3Boss(entityManager, resourceManager, player, ui,runStats);
             }
         }
+        */
     }
 
     @Override
