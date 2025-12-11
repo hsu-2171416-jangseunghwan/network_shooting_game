@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 class EnemyState {
     int id;
     double x, y;
-    double speedY = 120; 
+    double speedY = 120;
     int hp;
 
     EnemyState(int id, double x, double y, int hp) {
@@ -56,11 +56,12 @@ public class Server {
     private ConcurrentHashMap<Integer, EnemyState> enemies = new ConcurrentHashMap<>();
     private int nextEnemyId = 1;
 
-    private volatile int currentStage = 0;
-    private final Random rand = new Random();
-
     private ConcurrentHashMap<Integer, BulletState> bullets = new ConcurrentHashMap<>();
     private int nextBulletId = 1;
+
+    private volatile int currentStage = 0;
+
+    private final Random rand = new Random();
 
     private PlayerState[] players = new PlayerState[3];
 
@@ -68,22 +69,22 @@ public class Server {
     private long lastFireTimeP2 = 0;
     private final long FIRE_DELAY = 150;
 
-    // ★ 서버 실행 여부 플래그
     private volatile boolean serverRunning = true;
 
+    // 타이머
+    private long stageStartTime = 0;
+
     public Server(int port) throws Exception {
+
         serverSocket = new ServerSocket(port);
-        System.out.println("서버 실행 중...");
 
         clients[0] = serverSocket.accept();
         out[0] = new PrintWriter(clients[0].getOutputStream(), true);
         out[0].println("/setid/1");
-        System.out.println("P1 접속");
 
         clients[1] = serverSocket.accept();
         out[1] = new PrintWriter(clients[1].getOutputStream(), true);
         out[1].println("/setid/2");
-        System.out.println("P2 접속");
 
         players[1] = new PlayerState();
         players[2] = new PlayerState();
@@ -99,17 +100,14 @@ public class Server {
 
     public synchronized void broadcast(String msg) {
         if (!serverRunning) return;
-
         try {
             out[0].println(msg);
             out[1].println(msg);
         } catch (Exception ignore) {}
     }
 
-    // =============================================================
-    //  🔥 ClientHandler (여기서 클라이언트 종료 감지 → 서버 종료)
-    // =============================================================
     private class ClientHandler extends Thread {
+
         Socket socket;
         int id;
 
@@ -119,64 +117,43 @@ public class Server {
         }
 
         public void run() {
+
             try {
+
                 BufferedReader in =
                     new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
                 String msg;
+
                 while ((msg = in.readLine()) != null) {
-                    System.out.println("[" + id + "] " + msg);
 
                     if (msg.startsWith("/ready")) {
                         if (id == 1) ready1 = true;
                         if (id == 2) ready2 = true;
 
                         if (ready1 && ready2) {
+
                             broadcast("/stage/start/1");
                             currentStage = 1;
+                            stageStartTime = System.currentTimeMillis();
                             startStage1Spawning();
                         }
                         continue;
                     }
 
-                    if (msg.startsWith("/clear/")) {
-
-                        int clearedStage = Integer.parseInt(msg.split("/")[2]);
-
-                        if (id == 1) clear1 = true;
-                        if (id == 2) clear2 = true;
-
-                        if (clear1 && clear2) {
-                            clearAllEnemies();
-                            clearAllBullets();
-
-                            if (clearedStage == 1) broadcast("/stage/start/2");
-                            else if (clearedStage == 2) broadcast("/stage/start/3");
-                            else if (clearedStage == 3) broadcast("/gameclear");
-
-                            clear1 = clear2 = false;
-                        }
-                        continue;
-                    }
-
                     if (msg.startsWith("/input/")) {
-                        try {
-                            String[] t = msg.split("/");
-                            int pid = Integer.parseInt(t[2]);
-                            int mx = Integer.parseInt(t[3]);
-                            int my = Integer.parseInt(t[4]);
-                            int fire = Integer.parseInt(t[5]);
 
-                            PlayerState p = players[pid];
+                        String[] t = msg.split("/");
+                        int pid = Integer.parseInt(t[2]);
+                        int mx = Integer.parseInt(t[3]);
+                        int my = Integer.parseInt(t[4]);
+                        int fire = Integer.parseInt(t[5]);
 
-                            p.x += mx * 5;
-                            p.y += my * 5;
+                        PlayerState p = players[pid];
+                        p.x += mx * 5;
+                        p.y += my * 5;
 
-                            if (fire == 1) spawnBulletFromPlayer(pid);
-
-                        } catch (Exception e) {
-                            e.printStackTrace();
-                        }
+                        if (fire == 1) spawnBulletFromPlayer(pid);
 
                         continue;
                     }
@@ -184,29 +161,35 @@ public class Server {
                     broadcast(msg);
                 }
 
-                // -------------------------------
-                // 🔥 여기 도달 = 클라이언트 연결 끊김
-                // -------------------------------
-                System.out.println("클라이언트 " + id + " 연결 종료됨");
                 serverRunning = false;
                 shutdownServer();
 
             } catch (Exception e) {
-                System.out.println("클라이언트 " + id + " 연결 오류");
                 serverRunning = false;
                 shutdownServer();
             }
         }
     }
 
-    private void spawnEnemy(double x, double y) {
+    // ======================================================
+    //  Stage1 / Stage2 별 스폰 로직
+    // ======================================================
+
+    private void spawnEnemyStage1() {
         int id = nextEnemyId++;
+        double x = 100 + rand.nextInt(300);
+        double y = -120;
+
         EnemyState e = new EnemyState(id, x, y, 100);
+        e.speedY = 120;
+
         enemies.put(id, e);
-        broadcast("/enemy/spawn/" + id + "/" + x + "/" + y);
+
+        broadcast("/enemy/spawn/" + id + "/stage1/" + x + "/" + y);
     }
 
     private void startStage1Spawning() {
+
         new Thread(() -> {
             try {
                 while (serverRunning && currentStage == 1) {
@@ -217,23 +200,48 @@ public class Server {
         }).start();
     }
 
-    private void spawnEnemyStage1() {
-        int id = nextEnemyId++;
-        double x = 100 + rand.nextInt(300);
-        double y = -120;
+    // =====================================
+    // Stage2 Server Enemy Logic
+    // =====================================
+    private void spawnEnemyStage2() {
 
-        EnemyState e = new EnemyState(id, x, y, 100);
+        int id = nextEnemyId++;
+
+        double x = 100 + rand.nextInt(300);
+        double y = -130;
+
+        EnemyState e = new EnemyState(id, x, y, 150);
+        e.speedY = 120;
+
         enemies.put(id, e);
 
-        broadcast("/enemy/spawn/" + id + "/stage1/" + x + "/" + y);
+        broadcast("/enemy/spawn/" + id + "/stage2/" + x + "/" + y);
     }
 
-    private void startServerLoop() {
+    private void startStage2Spawning() {
+
         new Thread(() -> {
+            try {
+                while (serverRunning && currentStage == 2) {
+                    spawnEnemyStage2();
+                    Thread.sleep(1000);
+                }
+            } catch (Exception ignore) {}
+        }).start();
+    }
+
+    // ======================================================
+    //  서버 메인 루프
+    // ======================================================
+    private void startServerLoop() {
+
+        new Thread(() -> {
+
             long last = System.currentTimeMillis();
             long tickDelay = 1000 / 60;
 
             while (serverRunning) {
+
                 long now = System.currentTimeMillis();
                 long dt = now - last;
 
@@ -244,26 +252,68 @@ public class Server {
 
                 try { Thread.sleep(1); } catch (Exception ignore) {}
             }
-
-            System.out.println("서버 메인 루프 종료");
         }).start();
     }
 
     private void updateGame(long dt) {
+
         double sec = dt / 1000.0;
 
         if (currentStage == 1) updateEnemies(dt);
+        if (currentStage == 2) updateEnemies(dt);
 
         updateBullets(sec);
         checkBulletEnemyCollision();
         sendPlayerStates();
         sendBulletStates();
+
+        checkStageTimeout();
+    }
+
+    // Stage 타이머 체크
+    private void checkStageTimeout() {
+        long now = System.currentTimeMillis();
+
+        if (currentStage == 1 && now - stageStartTime > 15000) {
+            endStage1();
+        }
+
+        if (currentStage == 2 && now - stageStartTime > 30000) {
+            endStage2();
+        }
+    }
+
+    private void endStage1() {
+
+        clearAllEnemies();
+        clearAllBullets();
+
+        broadcast("/stage/clear/1");
+        broadcast("/stage/start/2");
+
+        currentStage = 2;
+        stageStartTime = System.currentTimeMillis();
+
+        startStage2Spawning();
+    }
+
+    private void endStage2() {
+
+        clearAllEnemies();
+        clearAllBullets();
+
+        broadcast("/stage/clear/2");
+        broadcast("/stage/start/3");
+
+        currentStage = 3;
     }
 
     private void updateEnemies(long dt) {
+
         double sec = dt / 1000.0;
 
         for (EnemyState e : enemies.values()) {
+
             e.y += e.speedY * sec;
 
             if (e.y > 900) {
@@ -276,7 +326,9 @@ public class Server {
     }
 
     private void updateBullets(double dt) {
+
         for (BulletState b : bullets.values()) {
+
             b.x += b.vx * dt;
             b.y += b.vy * dt;
 
@@ -288,12 +340,14 @@ public class Server {
     }
 
     private void sendBulletStates() {
+
         for (BulletState b : bullets.values()) {
             broadcast("/bullet/pos/" + b.id + "/" + b.x + "/" + b.y);
         }
     }
 
     private void sendPlayerStates() {
+
         for (int pid = 1; pid <= 2; pid++) {
             PlayerState p = players[pid];
             broadcast("/player/pos/" + pid + "/" + p.x + "/" + p.y);
@@ -303,6 +357,7 @@ public class Server {
     private void spawnBulletFromPlayer(int pid) {
 
         long now = System.currentTimeMillis();
+
         if (pid == 1 && now - lastFireTimeP1 < FIRE_DELAY) return;
         if (pid == 2 && now - lastFireTimeP2 < FIRE_DELAY) return;
 
@@ -310,21 +365,22 @@ public class Server {
         if (pid == 2) lastFireTimeP2 = now;
 
         PlayerState p = players[pid];
+
         double px = p.x;
         double py = p.y - 20;
 
-        double vx = 0;
-        double vy = -400;
-
         int id = nextBulletId++;
-        BulletState b = new BulletState(id, pid, px, py, vx, vy);
+
+        BulletState b = new BulletState(id, pid, px, py, 0, -400);
         bullets.put(id, b);
 
         broadcast("/bullet/spawn/" + id + "/" + pid + "/" + px + "/" + py);
     }
 
     private void checkBulletEnemyCollision() {
+
         for (BulletState b : bullets.values()) {
+
             for (EnemyState e : enemies.values()) {
 
                 if (Math.abs(b.x - e.x) < 40 && Math.abs(b.y - e.y) < 40) {
@@ -353,20 +409,16 @@ public class Server {
     }
 
     private void clearAllBullets() {
+
         for (int id : bullets.keySet()) {
             broadcast("/bullet/remove/" + id);
         }
         bullets.clear();
     }
 
-    // =============================================================
-    //  🔥 서버 종료 함수 (클라이언트 종료 시 자동 호출)
-    // =============================================================
     private void shutdownServer() {
-        try {
-            System.out.println("서버 종료 중...");
-            serverRunning = false;
 
+        try {
             for (Socket s : clients) {
                 if (s != null && !s.isClosed()) s.close();
             }
@@ -375,11 +427,7 @@ public class Server {
                 serverSocket.close();
             }
 
-            System.out.println("서버 완전 종료됨.");
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        } catch (Exception ignore) {}
     }
 
     public static void main(String[] args) throws Exception {
