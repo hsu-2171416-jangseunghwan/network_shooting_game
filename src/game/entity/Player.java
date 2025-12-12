@@ -511,4 +511,31 @@ public class Player extends Entity implements Movable, Shootable, Damageable, Pi
     public void setNetworkPosition(double x, double y) {
     	this.setPosition(x, y);
     }
+    
+ // 🔥 서버에서 사망 통보 시 호출
+    public void kill() {
+        if (!alive) return;
+
+        this.hp = 0;
+        this.alive = false;
+
+        // 싱글과 동일한 사망 처리 흐름 유지
+        destroy();
+    }
+    
+ // =======================================
+ // 🔥 네트워크 동기화 전용 (서버 권한)
+ // =======================================
+ public void setHp(int hp) {
+     if (!alive) return;
+
+     this.hp = Math.max(0, Math.min(maxHp, hp));
+
+     if (this.hp <= 0) {
+         kill();   // 서버에서 0 보냈으면 즉시 사망 처리
+     }
+ }
+
+
+    
 }

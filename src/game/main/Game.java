@@ -47,8 +47,10 @@ class NetEnemy {
     int id;
     double x, y;
     int hp;
-    String type;
+    String type;   // "boss"
+    int phase;     // 1,2,3
 }
+
 
 public class Game {
 
@@ -124,10 +126,6 @@ public class Game {
     
     private ConcurrentHashMap<Integer, NetBullet> netBullets = new ConcurrentHashMap<>();
     
-    private int currentNetworkStage = 1;
-    
-    
-    
     public Game() {
         bg = rm.getImage("background");
         entityManager.setCoopConfig(coopConfig);   // ★ 충돌 시스템에 코옵 설정 연결
@@ -136,7 +134,8 @@ public class Game {
         pausePanel = new PausePanel(runStats, rm);
         //network = new NetworkClient(this, "127.0.0.1", 30000);
     }
-
+    
+    
  // ============================================================
  // UPDATE
  // ============================================================
@@ -270,124 +269,113 @@ public class Game {
 
  
 //🔥 멀티 전용 보스 QTE 관리 (HP 30% 이하에서 한 번 발동)
-private void handleCoopQte(long dt) {
-	  // 코옵이 아니면 바로 종료
-    if (!coopMode || stageManager == null) return;
+ private void handleCoopQte(long dt) {
 
-    // 둘 다 살아있을 때만 발동 (한 명 죽었으면 의미 X)
-    if (player == null || player2 == null) return;
-    if (!player.isAlive() || !player2.isAlive()) return;
+	    // 코옵 아니면 종료
+	    if (!coopMode) return;
 
-    // 현재 스테이지가 Stage3Boss가 아니면 무시
-    AbstractStage current = stageManager.getCurrentStage();
-    if (!(current instanceof Stage3Boss bossStage)) return;
+	    // 플레이어 둘 다 살아있어야 의미 있음
+	    if (player == null || player2 == null) return;
+	    if (!player.isAlive() || !player2.isAlive()) return;
 
-    // 보스 객체 가져오기
-    BossSingle boss = bossStage.getBoss();
-    if (boss == null || !boss.isAlive()) return;
+	    // 🔥 서버에서 받은 보스(NetEnemy) 찾기
+	    NetEnemy boss = null;
+	    for (NetEnemy ne : netEnemies.values()) {
+	        if ("boss".equals(ne.type)) {
+	            boss = ne;
+	            break;
+	        }
+	    }
+	    if (boss == null) return;
 
-    // 이미 한 번 끝난 QTE는 재발동 안 함
-    if (coopQteFinished) return;
+	    // 이미 QTE 한 번 끝났으면 재실행 금지
+	    if (coopQteFinished) return;
 
-    long now = System.currentTimeMillis();
+	    long now = System.currentTimeMillis();
 
-    // 아직 시작 전이면 → HP 조건 보고 시작할지 결정
-    if (!coopQteActive) {
-        double hpRate = boss.getHp() / (double) boss.getMaxHp(); // 현재 HP 비율
-        if (hpRate <= coopQteHpThreshold) {
-            // ⭐ QTE 시작
-            coopQteActive = true;
-            coopQteStartTime = now;
-            coopQteP1Taps = 0;
-            coopQteP2Taps = 0;
-            
-         // 🔥 QTE 텍스트 깜빡임 시작
-            if (uiManager != null) {
-                uiManager.startQteFlash();
-            }
-            
-            System.out.println("[CoopQTE] 합동 공격 QTE 시작!");
+	    // ─────────────────────────
+	    // QTE 시작 조건 체크
+	    // ─────────────────────────
+	    if (!coopQteActive) {
 
-            // 화면 안내용 프롬프트
-            //entityManager.add(new game.entity.WavePrompt(
-                   // "⚡ 합동 QTE! P1:E / P2:L 연타!", coopQteDurationMs));
+	        // ⚠️ 서버 보스 maxHp = 1000 기준 (약속된 값)
+	        double hpRate = boss.hp / 1000.0;
 
-        }
-        return; // 아직 QTE 안 켜졌으면 여기서 종료
-    }
+	        if (hpRate <= coopQteHpThreshold) {
+	            coopQteActive = true;
+	            coopQteStartTime = now;
+	            coopQteP1Taps = 0;
+	            coopQteP2Taps = 0;
 
-    // 여기까지 왔으면 coopQteActive == true → 진행 중
+	            if (uiManager != null) {
+	                uiManager.startQteFlash();
+	            }
 
-    // 시간 다 됐는지 체크
-    if (now - coopQteStartTime >= coopQteDurationMs) {
-        coopQteActive = false;
-        coopQteFinished = true; // 한 번만 실행
-        
-     // 🔥 QTE 종료 시 텍스트 깜빡임 끄기
-        if (uiManager != null) {
-            uiManager.stopQteFlash();
-        }
-        
-        System.out.println("[CoopQTE] 탭 결과 - P1:" + coopQteP1Taps + " / P2:" + coopQteP2Taps); // ← 디버그용
+	            System.out.println("[CoopQTE] 합동 QTE 시작");
+	        }
+	        return;
+	    }
 
-        boolean p1Ok = coopQteP1Taps >= coopQteRequiredTaps;
-        boolean p2Ok = coopQteP2Taps >= coopQteRequiredTaps;
+	    // ─────────────────────────
+	    // QTE 진행 중 → 시간 종료 체크
+	    // ─────────────────────────
+	    if (now - coopQteStartTime < coopQteDurationMs) {
+	        return;
+	    }
 
-        if (p1Ok && p2Ok) {
-            // ✅ 둘 다 성공
-            System.out.println("[CoopQTE] 성공! 보스에게 큰 피해!");
+	    // ─────────────────────────
+	    // QTE 종료 처리
+	    // ─────────────────────────
+	    coopQteActive = false;
+	    coopQteFinished = true;
 
-            int damage = (int)(boss.getMaxHp() * 0.2); // 보스 체력 20% 깎기
-            boss.takeDamage(damage);
-            
-            // 🔥 QTE 전용 폭발 이펙트 (보스 중앙에서)
-            double ex = boss.getX() + boss.getW() / 2.0;
-            double ey = boss.getY() + boss.getH() / 2.0;
-            
-         // 여기서 사용하는 Explosion 계열 클래스는
-            // 기존에 '보스 피격'이나 '적 죽을 때' 쓰고 있는 클래스 그대로 써주면 돼.
-            // 예: new BigExplosion(ex, ey) / new SmallExplosion(ex, ey) 등등
-            entityManager.add(new BigExplosion(ex, ey));  // 
-            
-            // 🔥 QTE 성공 연출용 화면 흔들림 (실패보다 조금 더 세고 길게)
-            screenShakeUntil = System.currentTimeMillis() + 1500; // 0.7초 동안 유지
-            screenShakeMagnitude = 14; // 세기(픽셀). 10~20 사이에서 취향대로 조절 가능
+	    if (uiManager != null) {
+	        uiManager.stopQteFlash();
+	    }
 
-            // 성공 메시지
-            entityManager.add(new game.bosseffect.WavePrompt(
-                    "✅ QTE 성공! 보스가 큰 피해를 입었습니다!", 1500));
+	    boolean p1Ok = coopQteP1Taps >= coopQteRequiredTaps;
+	    boolean p2Ok = coopQteP2Taps >= coopQteRequiredTaps;
 
-        } else {
-            // ❌ 실패 or 한 명만 성공
-            System.out.println("[CoopQTE] 실패... 보스가 분노합니다.");
+	    System.out.println("[CoopQTE] 결과 → P1:" + coopQteP1Taps + " / P2:" + coopQteP2Taps);
 
-            // 실패 메시지
-            entityManager.add(new game.bosseffect.WavePrompt(
-                    "❌ QTE 실패... 보스가 분노합니다!", 1500));
-            
-            entityManager.add(new game.bosseffect.WavePrompt(
-                    "❌ QTE 실패... 보스가 분노합니다!", 1500));
+	    // ─────────────────────────
+	    // 성공 / 실패 분기
+	    // ─────────────────────────
+	    if (p1Ok && p2Ok) {
+	        // ✅ 성공 → 서버에 통보
+	        System.out.println("[CoopQTE] 성공 → 서버 통보");
 
-            // 🔥 여기서 현재 스테이지가 Stage3Boss라면, 분노 모드 트리거
-            if (current instanceof Stage3Boss sb) {
-               sb.onCoopQteFailed();  // 보스에게 "지금 분노해라" 신호 보내기
-            }
+	        if (network != null) {
+	            network.send("/boss/qte/success/" + coopQteP1Taps + "/" + coopQteP2Taps);
+	        }
 
-            // 가벼운 패널티: 플레이어 둘 다 1뎀 (실패 실감용)
-            if (player.isAlive()) {
-                player.takeDamage(1);
-            }
-            if (player2.isAlive()) {
-                player2.takeDamage(1);
-            }
-            
-            screenShakeUntil = System.currentTimeMillis() + 2000; // 0.5초 동안
-            screenShakeMagnitude = 12; // 흔들림 세기 (원하면 8~20 사이로 조절)
+	        // 🔥 성공 연출 (클라 전용)
+	        entityManager.add(new game.bosseffect.WavePrompt(
+	                "✅ QTE 성공! 강력한 합동 공격!", 1500));
 
-         
-        }
-    }
-}
+	        screenShakeUntil = System.currentTimeMillis() + 1500;
+	        screenShakeMagnitude = 14;
+
+	    } else {
+	        // ❌ 실패 → 서버에 통보
+	        System.out.println("[CoopQTE] 실패 → 서버 통보");
+
+	        if (network != null) {
+	            network.send("/boss/qte/fail/" + coopQteP1Taps + "/" + coopQteP2Taps);
+	        }
+
+	        entityManager.add(new game.bosseffect.WavePrompt(
+	                "❌ QTE 실패... 보스가 분노합니다!", 1500));
+
+	        // 실패 패널티 (연출 + 체감용)
+	        if (player.isAlive()) player.takeDamage(1);
+	        if (player2.isAlive()) player2.takeDamage(1);
+
+	        screenShakeUntil = System.currentTimeMillis() + 2000;
+	        screenShakeMagnitude = 12;
+	    }
+	}
+
 
  
 
@@ -435,6 +423,7 @@ private void handleCoopQte(long dt) {
             stageManager.render(g);
         
      // 🔥 서버에서 받은 적 렌더링
+     // 🔥 서버에서 받은 적 렌더링
         for (NetEnemy e : netEnemies.values()) {
 
             BufferedImage img;
@@ -442,33 +431,68 @@ private void handleCoopQte(long dt) {
             switch (e.type) {
                 case "stage1" -> img = rm.getImage("스테이지1잡몸");
                 case "stage2" -> img = rm.getImage("스테이지2잡몸");
-                case "boss"   -> img = rm.getImage("Boss1");
-                default       -> img = rm.getImage("enemy");
+                case "boss"   -> {
+                    // 🔥 페이즈별 보스 이미지
+                    img = switch (e.phase) {
+                        case 2 -> rm.getImage("Boss2");
+                        case 3 -> rm.getImage("Boss3");
+                        default -> rm.getImage("Boss1");
+                    };
+                }
+                default -> img = rm.getImage("enemy");
             }
 
+            // ===============================
+            // 🔥 BOSS 전용 렌더링 (싱글과 동일)
+            // ===============================
+            if ("boss".equals(e.type)) {
+
+                // 페이즈별 이미지
+                switch (e.phase) {
+                    case 1 -> img = rm.getImage("Boss1");
+                    case 2 -> img = rm.getImage("Boss2");
+                    case 3 -> img = rm.getImage("Boss3");
+                    default -> img = rm.getImage("Boss1");
+                }
+
+                // 🔥 싱글과 동일한 스케일
+                double scale = 0.5;
+
+                int drawW = (int)(img.getWidth() * scale);
+                int drawH = (int)(img.getHeight() * scale);
+
+                // 🔥 서버 좌표 = 보스 중심 좌표
+                int drawX = (int)(e.x - drawW / 2.0);
+                int drawY = (int)(e.y - drawH / 2.0);
+
+                g.drawImage(img, drawX, drawY, drawW, drawH, null);
+                continue;
+            }
+
+
+            // ===============================
+            // 일반 적 렌더링 (기존 방식 유지)
+            // ===============================
             int enemyW = 70;
             int enemyH = 70;
 
             g.drawImage(img, (int)e.x, (int)e.y, enemyW, enemyH, null);
 
-            // ───────── HP BAR ─────────
-            int maxHp = 100;
-
+            // HP BAR
             int barW = 50;
             int barH = 6;
             int barX = (int)e.x + (enemyW - barW) / 2;
             int barY = (int)e.y - 10;
 
-            float ratio = Math.max(0f, e.hp / (float)maxHp);
+            float ratio = Math.max(0f, e.hp / 100f);
 
-            // 배경
             g.setColor(new Color(60, 0, 0, 150));
             g.fillRect(barX, barY, barW, barH);
 
-            // 현재 HP
             g.setColor(Color.RED);
             g.fillRect(barX, barY, (int)(barW * ratio), barH);
         }
+
 
 
         
@@ -712,7 +736,7 @@ private void handleCoopQte(long dt) {
         	}
 
 
-        // ───────── 결과창 ─────────
+     // ───────── 결과창 ─────────
         if (uiManager != null && uiManager.isResultVisible()) {
 
             if (code == KeyEvent.VK_ENTER) {
@@ -720,7 +744,7 @@ private void handleCoopQte(long dt) {
                 uiManager.hideResult();
 
                 // 현재 스테이지 번호 확인
-                int clearedStage = currentNetworkStage;
+                int clearedStage = stageManager.getCurrentStage().getStageNumber();
 
                 // 🔥 서버에 Stage Clear 전송
                 if (network != null) {
@@ -734,6 +758,7 @@ private void handleCoopQte(long dt) {
                 return;
             }
 
+            return;
         }
 
 
@@ -904,65 +929,89 @@ private void handleCoopQte(long dt) {
     // STAGE START (Stage1 / Stage2 / Stage3)
     // ============================================================
     private void startStage1() {
+    	//runStats.reset();   
+    	// ★ 새 판 시작할 때 통계 0으로 초기화
+    	if (!pendingEnemySpawns.isEmpty()) {
+    	    List<String> copy = new ArrayList<>(pendingEnemySpawns);
+    	    pendingEnemySpawns.clear();
 
-        // 서버에서 이미 스폰된 적이 있을 수 있으므로 처리
-        if (!pendingEnemySpawns.isEmpty()) {
-            List<String> copy = new ArrayList<>(pendingEnemySpawns);
-            pendingEnemySpawns.clear();
+    	    for (String packet : copy) {
+    	        onNetworkPacket(packet);
+    	    }
+    	}
+    	
+        setupPlayer();
+        uiManager = new UIManager(player, runStats,rm);
 
-            for (String p : copy) onNetworkPacket(p);
-        }
+        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+        s1.setNextStage(s2);
+        s2.setNextStage(s3);
 
-        setupPlayer(); // 플레이어 배치
-        uiManager = new UIManager(player, runStats, rm);
-        uiManager.getHud().setTotalTime(7);
-        uiManager.getHud().resetTimer();
-
-        // 🔥 멀티플레이에서는 StageManager 절대 쓰지 않음!!
-        stageManager = null;
-
+        stageManager = new StageManager(s1, uiManager);
+        stageManager.getCurrentStage().start();
+        
         audio.playBGM("game_music.wav");
 
-        System.out.println("[Game] Stage1(멀티) 시작 — 로컬 스테이지 OFF");
+        System.out.println("[Game] Stage1 시작");
     }
-
 
     private void startStage2() {
-
-        if (player == null) setupPlayer(); 
-        uiManager = new UIManager(player, runStats, rm);
-        uiManager.getHud().setTotalTime(15);
-        uiManager.getHud().resetTimer();
-
-        // ★★ 추가: Stage2 도 pending spawn 적용
-        if (!pendingEnemySpawns.isEmpty()) {
-            List<String> copy = new ArrayList<>(pendingEnemySpawns);
-            pendingEnemySpawns.clear();
-            for (String p : copy) onNetworkPacket(p);
+    	//runStats.reset();             
+    	
+        setupPlayer();
+        uiManager = new UIManager(player, runStats,rm);
+        
+        if (isMultiplayer()) {
+            System.out.println("[Client] Multiplayer Stage2 → server authoritative");
+            audio.playBGM("game_music.wav");
+            return;   // ❗ Stage2 로컬 로직 생성 금지
         }
+        
+        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
+        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+       
 
-        stageManager = null;
+        s2.setNextStage(s3);
+
+        stageManager = new StageManager(s2, uiManager);
+        stageManager.getCurrentStage().start();
+        
         audio.playBGM("game_music.wav");
 
-        System.out.println("[Game] Stage2(멀티) 시작 — 로컬 스테이지 OFF");
+        System.out.println("[Game] Stage2 시작");
     }
-
-
 
     private void startStage3() {
 
         audio.stopBGM();
 
-        if (player == null) setupPlayer(); 
+        setupPlayer();
         uiManager = new UIManager(player, runStats, rm);
-        uiManager.getHud().resetTimer();
 
-        // 🔥 Stage3Boss도 서버 기반이므로 로컬 스테이지 금지
-        stageManager = null;
+        // 🔥 멀티플레이면 Stage 로직 생성 금지
+        if (isMultiplayer()) {
+            System.out.println("[Client] Multiplayer Stage3 → server authoritative");
+
+            // 서버가 /enemy/spawn (boss) 보내줄 것임
+            audio.playBGM("boss_stage_music.wav");
+            return;
+        }
+
+        // ─────────────────────────────
+        // ❌ 싱글 플레이 전용 로직
+        // ─────────────────────────────
+        AbstractStage s3 =
+                new Stage3Boss(entityManager, rm, player, uiManager, runStats);
+
+        stageManager = new StageManager(s3, uiManager);
+        stageManager.getCurrentStage().start();
 
         audio.playBGM("boss_stage_music.wav");
 
-        System.out.println("[Game] Stage3(멀티) 시작 — 로컬 보스 OFF (서버 전용)");
+        System.out.println("[Game] Stage3 시작 (Single)");
     }
 
 
@@ -1127,11 +1176,15 @@ private void handleCoopQte(long dt) {
     	        // -----------------------------------------
     	        NetEnemy ne = new NetEnemy();
     	        ne.id = id;
-    	        ne.type = type; // ★ 추가된 필드에 저장
+    	        ne.type = type;
     	        ne.x = x;
     	        ne.y = y;
-    	        ne.hp = 100; // 기본값 (원하면 서버에서 보낼 수 있음)
+    	        ne.hp = 100;
 
+    	        // ★ boss면 페이즈 1부터 시작
+    	        if ("boss".equals(type)) {
+    	            ne.phase = 1;
+    	        }
     	        netEnemies.put(id, ne);
 
     	    } catch (Exception ex) {
@@ -1141,6 +1194,19 @@ private void handleCoopQte(long dt) {
     	    return;
     	}
 
+     if (p.startsWith("/boss/phase/")) {
+    	    int phase = Integer.parseInt(p.split("/")[3]);
+
+    	    for (NetEnemy ne : netEnemies.values()) {
+    	        if ("boss".equals(ne.type)) {
+    	            ne.phase = phase;
+    	            System.out.println("[NET] Boss phase changed → " + phase);
+    	        }
+    	    }
+    	    return;
+    	}
+
+     
 
 
 
@@ -1165,22 +1231,10 @@ private void handleCoopQte(long dt) {
     	 coopMode = true;
          try {
              int stage = Integer.parseInt(p.split("/")[3]);
-             currentNetworkStage = stage; 
-             
              startReadyCountdown(stage);
          } catch (Exception e) { }
          return;
      }
-     
-     if (p.startsWith("/stage/clear/")) {
-    	    int stage = Integer.parseInt(p.split("/")[3]);
-
-    	    // 결과창 띄움
-    	    uiManager.showResult(0, 0, stage, 60);
-
-    	    currentNetworkStage = stage;
-    	    return;
-    	}
      
      if (p.startsWith("/gameclear")) {
     	    finalClear = true;
@@ -1265,6 +1319,86 @@ private void handleCoopQte(long dt) {
     	    }
     	    return;
     	}
+     
+     if (p.startsWith("/player/hp/")) {
+    	    String[] t = p.split("/");
+    	    int pid = Integer.parseInt(t[3]);
+    	    int hp  = Integer.parseInt(t[4]);
+
+    	    Player target = (pid == 1 ? player : player2);
+    	    if (target != null) {
+    	        target.setHp(hp);   // 또는 takeDamage 기반
+    	    }
+    	    return;
+    	}
+
+    	if (p.startsWith("/player/dead/")) {
+    	    int pid = Integer.parseInt(p.split("/")[3]);
+
+    	    Player target = (pid == 1 ? player : player2);
+    	    if (target != null) {
+    	        target.kill();
+    	    }
+    	    return;
+    	}
+
+     
+  // -------------------------
+  // 🔥 Boss State 패킷 처리
+  // /boss/state/{id}/{x}/{y}/{hp}/{maxHp}/{alive}
+  // -------------------------
+  if (p.startsWith("/boss/state/")) {
+      try {
+          String[] t = p.split("/");
+
+          int id = Integer.parseInt(t[3]);
+          double x = Double.parseDouble(t[4]);
+          double y = Double.parseDouble(t[5]);
+          int hp = Integer.parseInt(t[6]);
+          int maxHp = Integer.parseInt(t[7]);
+          boolean alive = Integer.parseInt(t[8]) == 1;
+
+          NetEnemy boss = netEnemies.get(id);
+          if (boss == null) {
+              boss = new NetEnemy();
+              boss.id = id;
+              boss.type = "boss";
+              boss.phase = 1;
+              netEnemies.put(id, boss);
+          }
+
+          boss.x = x;
+          boss.y = y;
+          boss.hp = hp;
+
+          // 💡 HP 비율 기반 Phase 계산
+          double rate = hp / (double) maxHp;
+          if (rate <= 0.33) boss.phase = 3;
+          else if (rate <= 0.66) boss.phase = 2;
+          else boss.phase = 1;
+
+          // 🔥🔥🔥 여기 추가 🔥🔥🔥
+          if (uiManager != null && uiManager.getHud() != null) {
+              uiManager.getHud().setBossStage(true); // TIME 대신 보스 HUD
+              uiManager.getHud().setBossHp(
+                  boss.hp,
+                  maxHp,
+                  boss.phase
+              );
+          }
+
+          if (!alive) {
+              netEnemies.remove(id);
+          }
+
+
+      } catch (Exception e) {
+          System.out.println("[NET] boss/state parse error: " + p);
+      }
+      return;
+  }
+
+     
      
      System.out.println("[NET] Unknown packet: " + p);
  }

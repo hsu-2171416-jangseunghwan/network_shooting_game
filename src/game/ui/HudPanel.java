@@ -35,6 +35,10 @@ public class HudPanel {
     // 보스전 여부
     private boolean isBossStage = false;
 
+    private Integer bossHp = null;
+    private Integer bossMaxHp = null;
+    private Integer bossPhase = null;
+    
     // 공용 리소스 매니저
     private static final ResourceManager RM = new ResourceManager();
 
@@ -58,7 +62,12 @@ public class HudPanel {
             pausedAccumulated += System.currentTimeMillis() - pausedStart;
         }
     }
-
+    
+    public void setBossHp(int hp, int maxHp, int phase) {
+        this.bossHp = hp;
+        this.bossMaxHp = maxHp;
+        this.bossPhase = phase;
+    }
 
     // ===========================================================
     // 🟡 폰트 로드 (Orbitron)
@@ -349,51 +358,47 @@ public class HudPanel {
     }
 
     private void renderBossHpBar(Graphics2D g, int startX, int width, int height) {
-        if (player == null || player.getStage() == null) return;
-        if (player.getStage().getBoss() == null) return;
 
-        var boss = player.getStage().getBoss();
-        int hp = boss.getHp();
-        int max = boss.getMaxHp();
+        if (bossHp == null || bossMaxHp == null) return;
 
-        // BAR 영역
+        int hp = bossHp;
+        int max = bossMaxHp;
+
         int marginX = 20;
         int barW = width - marginX * 2;
         int barH = 32;
         int barX = startX + marginX;
         int barY = 16;
 
-        // 배경 박스
+        // 배경
         g.setColor(new Color(30, 0, 0, 160));
         g.fillRoundRect(barX, barY, barW, barH, 16, 16);
 
-        // HP 비율
         float ratio = Math.max(0f, (float) hp / max);
-        int fillW = (int) (barW * ratio);
+        int fillW = (int)(barW * ratio);
 
-        // HP 바(빨강)
         g.setColor(new Color(255, 70, 70, 220));
         g.fillRoundRect(barX, barY, fillW, barH, 16, 16);
 
-        // 테두리
         g.setColor(new Color(255, 200, 200));
         g.setStroke(new BasicStroke(2f));
         g.drawRoundRect(barX, barY, barW, barH, 16, 16);
 
-        // 🔥 HP 텍스트
         g.setFont(orbitronFont.deriveFont(Font.BOLD, 18f));
         String txt = "BOSS " + hp + " / " + max;
         int tw = g.getFontMetrics().stringWidth(txt);
         g.setColor(Color.WHITE);
-        g.drawString(txt, barX + (barW - tw)/2, barY + 22);
+        g.drawString(txt, barX + (barW - tw) / 2, barY + 22);
 
-        // 🔥 Phase 텍스트 추가 (HP바 아래 18px)
-        g.setFont(orbitronFont.deriveFont(Font.PLAIN, 14f));
-        String phaseTxt = "PHASE " + boss.getPhaseIndex();
-        int pw = g.getFontMetrics().stringWidth(phaseTxt);
-        g.setColor(new Color(255, 220, 220));
-        g.drawString(phaseTxt, barX + (barW - pw)/2, barY + 22 + 25);
+        if (bossPhase != null) {
+            g.setFont(orbitronFont.deriveFont(Font.PLAIN, 14f));
+            String phaseTxt = "PHASE " + bossPhase;
+            int pw = g.getFontMetrics().stringWidth(phaseTxt);
+            g.setColor(new Color(255, 220, 220));
+            g.drawString(phaseTxt, barX + (barW - pw) / 2, barY + 47);
+        }
     }
+
 
     
     // ===========================================================
