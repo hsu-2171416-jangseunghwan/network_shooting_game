@@ -523,8 +523,40 @@ public class Game {
         }
         
         for (NetBullet b : netBullets.values()) {
-            g.drawImage(rm.getImage("bullet_basic"), (int)b.x, (int)b.y, null);
+
+            // ===============================
+            // 🔥 적 총알 (싱글과 동일: 이미지 없음)
+            // ===============================
+            if (b.isEnemyBullet()) {
+
+                g.setColor(new Color(255, 200, 60)); // 싱글 BASIC 느낌
+                g.fillRoundRect(
+                    (int) b.x,
+                    (int) b.y,
+                    8,   // 싱글 Bullet 기본 width
+                    16,  // 싱글 Bullet 기본 height
+                    4, 4
+                );
+
+            }
+            // ===============================
+            // 🔥 플레이어 총알 (기존 이미지 유지)
+            // ===============================
+            else {
+
+                Image img = rm.getImage("bullet_basic");
+
+                if (img != null) {
+                    g.drawImage(img, (int) b.x, (int) b.y, null);
+                } else {
+                    // 혹시 이미지 없을 때 안전장치
+                    g.setColor(Color.YELLOW);
+                    g.fillRoundRect((int) b.x, (int) b.y, 8, 16, 4, 4);
+                }
+            }
         }
+
+
 
      // 🔥 마지막에 항상 원래 변환으로 되돌리기
         g.setTransform(oldTx);
@@ -1259,8 +1291,9 @@ public class Game {
 
      if (p.startsWith("/bullet/spawn/")) {
     	    String[] t = p.split("/");
+
     	    int id = Integer.parseInt(t[3]);
-    	    int owner = Integer.parseInt(t[4]);
+    	    String owner = t[4];        // ★ 핵심
     	    double x = Double.parseDouble(t[5]);
     	    double y = Double.parseDouble(t[6]);
 
@@ -1268,6 +1301,8 @@ public class Game {
     	    netBullets.put(id, b);
     	    return;
     	}
+
+
      
      if (p.startsWith("/bullet/pos/")) {
     	    String[] t = p.split("/");

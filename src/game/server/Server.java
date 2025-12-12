@@ -14,13 +14,26 @@ class EnemyState {
     double speedY = 120;
     int hp;
 
+    long spawnTime;
+    long lastFireTime = 0;
+    long fireDelay = 1500;
+
+    boolean canFire; // ★ 중요
+
     EnemyState(int id, double x, double y, int hp) {
         this.id = id;
         this.x = x;
         this.y = y;
         this.hp = hp;
+
+        this.spawnTime = System.currentTimeMillis();
+
+        // 🔥 Stage1: 약 30%만 공격
+        this.canFire = Math.random() < 0.3;
     }
 }
+
+
 
 class BulletState {
     int id;
@@ -95,7 +108,7 @@ public class Server {
     // 타이머
     private long stageStartTime = 0;
     
-    private static final long STAGE1_TIME = 10000;
+    private static final long STAGE1_TIME = 20000;
     private static final long STAGE2_TIME = 10000; // 테스트용
     
     private static final double P1_START_X = 250;
@@ -351,6 +364,7 @@ public class Server {
         }
         updateBullets(sec);
         checkBulletEnemyCollision();
+        checkBulletPlayerCollision();
         checkEnemyPlayerCollision();
         sendPlayerStates();
         sendBulletStates();
@@ -459,19 +473,62 @@ public class Server {
     private void updateEnemies(long dt) {
 
         double sec = dt / 1000.0;
+        long now = System.currentTimeMillis();
 
         for (EnemyState e : enemies.values()) {
 
+            // 이동
             e.y += e.speedY * sec;
 
+            // 화면 밖 제거
             if (e.y > 900) {
                 enemies.remove(e.id);
                 continue;
             }
 
+            // ===============================
+            // 🔥 Stage1 공격 조건 (중요)
+            // ===============================
+            if (currentStage == 1 && e.canFire) {
+
+                // 1️⃣ 화면 안으로 들어온 뒤
+                if (e.y > 80) {
+
+                    // 2️⃣ 스폰 직후 1초 대기
+                    if (now - e.spawnTime > 1000) {
+
+                        // 3️⃣ 발사 쿨타임
+                        if (now - e.lastFireTime > e.fireDelay) {
+                            e.lastFireTime = now;
+                            spawnEnemyBullet(e);
+                        }
+                    }
+                }
+            }
+
             broadcast("/enemy/pos/" + e.id + "/" + e.x + "/" + e.y);
         }
     }
+
+    
+    private void spawnEnemyBullet(EnemyState e) {
+
+        int id = nextBulletId++;
+
+        // 싱글과 동일하게 아래 방향
+        double bx = e.x;
+        double by = e.y + 40;
+
+        double vx = 0;
+        double vy = 250; // 적 총알 속도 (싱글 값 맞추기)
+
+        BulletState b = new BulletState(id, -1, bx, by, vx, vy);
+        bullets.put(id, b);
+
+        broadcast("/bullet/spawn/" + id + "/enemy/" + bx + "/" + by);
+    }
+
+
     
     private void updateBoss(long dt) {
         if (boss == null) return;
@@ -574,18 +631,18 @@ public class Server {
 
         for (BulletState b : bullets.values()) {
 
-            // ─────────────────────────
-            // 1) 일반 적 충돌
-            // ─────────────────────────
+            // 🔥 플레이어 총알만 적을 맞출 수 있음
+            if (b.ownerId == -1) continue;
+
             for (EnemyState e : enemies.values()) {
 
-                if (Math.abs(b.x - e.x) < 40 && Math.abs(b.y - e.y) < 40) {
+                if (Math.abs(b.x - e.x) < 40 &&
+                    Math.abs(b.y - e.y) < 40) {
 
                     e.hp -= 20;
 
                     bullets.remove(b.id);
                     broadcast("/bullet/remove/" + b.id);
-
                     broadcast("/enemy/hp/" + e.id + "/" + e.hp);
 
                     if (e.hp <= 0) {
@@ -623,7 +680,48 @@ public class Server {
             }
         }
     }
+    
+    private void checkBulletPlayerCollision() {
 
+        for (BulletState b : bullets.values()) {
+
+            // 🔥 적 총알만 플레이어를 공격
+            if (b.ownerId != -1) continue;
+
+            for (int pid = 1; pid <= 2; pid++) {
+
+                PlayerState p = players[pid];
+                if (p == null || p.hp <= 0) continue;
+
+                // 싱글과 동일한 판정 크기
+                if (Math.abs(b.x - p.x) < 20 &&
+                    Math.abs(b.y - p.y) < 20) {
+
+                    // 💥 데미지
+                    p.hp -= 1;
+
+                    System.out.println(
+                        "[Server] Player " + pid + " hit by ENEMY BULLET! HP=" + p.hp
+                    );
+
+                    // 총알 제거
+                    bullets.remove(b.id);
+                    broadcast("/bullet/remove/" + b.id);
+
+                    // HP 동기화
+                    if (p.hp <= 0) {
+                        broadcast("/player/dead/" + pid);
+                    } else {
+                        broadcast("/player/hp/" + pid + "/" + p.hp);
+                    }
+
+                    return; // 1프레임 1회 처리
+                }
+            }
+        }
+    }
+
+    
     private void checkBossPlayerCollision() {
 
         if (currentStage != 3 || boss == null || !boss.alive) return;
