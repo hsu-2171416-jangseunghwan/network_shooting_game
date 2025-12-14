@@ -592,7 +592,7 @@ public class Game {
 
         g.setFont(GameTheme.TITLE);
         g.setColor(GameTheme.NEON_CYAN);
-        GameTheme.drawCentered(g, "STELLAR IMPACT", width, 220);
+        GameTheme.drawCentered(g, "CROSS DUO", width, 220);
 
         g.setFont(GameTheme.MENU_OPTION);
         g.setColor(GameTheme.NEON_CYAN);
