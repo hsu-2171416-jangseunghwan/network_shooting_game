@@ -1,13 +1,15 @@
 package game.stage;
 
+import java.awt.Graphics2D;
+
+import GameStateTracker.java.GameStateTracker;
+import game.entity.BossSingle;
 import game.entity.Player;
+import game.main.Game;
 import game.manager.EntityManager;
 import game.manager.ResourceManager;
 import game.status.RunStats;
 import game.ui.UIManager;
-import game.entity.BossSingle;
-import java.awt.*;
-import GameStateTracker.java.GameStateTracker;
 
 
 public abstract class AbstractStage {
@@ -62,14 +64,17 @@ public abstract class AbstractStage {
         // 🔥 PAUSED 상태에서는 timeUp 검사 금지
         if (GameStateTracker.isPaused()) return;
 
-        if (stageTimeLimit > 0 && ui.getHud().isTimeUp()) {
-            ui.showResult(
+     // ❌ 멀티플레이에서는 HUD 타이머로 스테이지 종료 판단 금지
+        if (!Game.isMultiplayer()) {
+            if (stageTimeLimit > 0 && ui.getHud().isTimeUp()) {
+                ui.showResult(
                     player.getScore(),
                     player.getCollectedCount(),
                     getStageNumber(),
                     System.currentTimeMillis() - stageStartTime
-            );
-            stageEnded = true;
+                );
+                stageEnded = true;
+            }
         }
     }
 

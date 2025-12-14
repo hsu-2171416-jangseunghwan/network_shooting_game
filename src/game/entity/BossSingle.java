@@ -248,7 +248,18 @@ public class BossSingle extends Enemy {
         this.player = p;
     }
     
+ // BossSingle 내부에 추가
+    public BossPhase getPhaseByIndex(int phaseIndex) {
+        if (phaseIndex < 1 || phaseIndex > phases.size()) return null;
+        return phases.get(phaseIndex - 1); // phaseIndex는 1부터
+    }
     
-    
-    
+    public void forcePhase(int phaseIndex) {
+        int idx = phaseIndex - 1;
+        if (idx < 0 || idx >= phases.size()) return;
+
+        currentPhase = idx;
+        phases.get(currentPhase).enter(this);
+        phaseStartTime = System.currentTimeMillis();
+    }
 }

@@ -86,7 +86,8 @@ public class Player extends Entity implements Movable, Shootable, Damageable, Pi
 
     // 추가 : 이펙트 등록용
     private transient EntityManager entityManager;
-
+    private static final int RENDER_OFFSET_X = -25; // ← 여기
+    private static final int RENDER_OFFSET_Y = 0;
     // 기본 생성자(요구 시그니처 유지). 실제 자원/위치/무기는 with* 로 주입.
     public Player(PlayerIndex idx) {
         super(EntityType.PLAYER, Team.PLAYER, 0, 0, 1, 1); // 임시 크기 → setSprite에서 갱신
@@ -535,7 +536,14 @@ public class Player extends Entity implements Movable, Shootable, Damageable, Pi
          kill();   // 서버에서 0 보냈으면 즉시 사망 처리
      }
  }
+ 
+ public void setScore(int score) {
+	    this.score = score;
+	}
 
+ 
+ 
+ 
 
     
 }

@@ -13,50 +13,46 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 
-import game.bosseffect.BigExplosion;
-import game.entity.BossSingle;
-import game.entity.Bullet;
-import game.entity.Enemy;
+import game.bosseffect.ElectricWave;
+import game.bosseffect.WavePrompt;
 import game.entity.Player;
 import game.enumset.BulletType;
-import game.enumset.EnemyKind;
 import game.enumset.GameState;
-import game.enumset.MenuOption;
 import game.enumset.PlayerIndex;
 import game.manager.AudioManager;
 import game.manager.EntityManager;
 import game.manager.ResourceManager;
 import game.manager.StageManager;
 import game.mode.LocalCoopConfig;
-import game.movement.LinearMove;
 import game.network.NetBullet;
 import game.network.NetworkClient;
-import game.stage.AbstractStage;
-import game.stage.Stage1;
-import game.stage.Stage2;
-import game.stage.Stage3Boss;
 import game.status.RunStats;  // ★ 한 판 동안의 통계 저장용
 import game.ui.GameTheme;
 import game.ui.PausePanel;
 import game.ui.UIManager;
-import game.weapon.LinearFire;
 import game.weapon.Weapon;
 
 
 class NetEnemy {
-    int id;
-    double x, y;
-    int hp;
-    String type;   // "boss"
-    int phase;     // 1,2,3
+    public int id;
+    public String type;
+    public double x, y;
+    public int hp;
+
+    // 🔥 렌더링용
+    public int w, h;
+    public Image sprite;
+
+    // 보스용
+    public int phase = 0;
 }
+
 
 
 public class Game {
 
 	private HashMap<Integer, NetEnemy> netEnemies = new HashMap<>();
     private GameState state = GameState.MENU;
-    private MenuOption selected = MenuOption.SINGLE;
 
     private final ResourceManager rm = new ResourceManager();
     private final EntityManager entityManager = new EntityManager();
@@ -115,7 +111,8 @@ public class Game {
     private int screenShakeMagnitude = 10;       // 흔들림 세기(픽셀)
     private final Random shakeRng = new Random(); // 랜덤 오프셋 생성용
 
-
+    private static final boolean MULTI = true;
+    
     private boolean finalClear = false;  // 마지막 스테이지 클리어 여부
 
     private boolean resumeFromPause = false;
@@ -125,6 +122,11 @@ public class Game {
     private List<String> pendingEnemySpawns = new ArrayList<>();
     
     private ConcurrentHashMap<Integer, NetBullet> netBullets = new ConcurrentHashMap<>();
+    
+    private int serverRemainTime = -1;
+    
+    private static final int RENDER_OFFSET_X = -25;
+    private static final int RENDER_OFFSET_Y = 0;
     
     public Game() {
         bg = rm.getImage("background");
@@ -206,8 +208,9 @@ public class Game {
          handleCoopQte(dt);
 
          // 스테이지 진행 (QTE 중엔 멈춤)
-         if (stageManager != null && !coopQteActive)
-             stageManager.update(dt);
+         if (!isMultiplayer() && stageManager != null && !coopQteActive) {
+        	    stageManager.update(dt);
+        	}
 
          // P1 업데이트
          if (player != null) {
@@ -244,26 +247,14 @@ public class Game {
                  return;
              }
          } else {
-             if (!p1Alive && !p2Alive) {
-                 state = GameState.GAME_OVER;
-                 return;
-             }
+        	 if (!isMultiplayer()) {
+        		    if (!p1Alive) {
+        		        state = GameState.GAME_OVER;
+        		        return;
+        		    }
+        		}
          }
 
-         // 시간 종료 → 결과창
-         if (uiManager != null &&
-             uiManager.getHud() != null &&
-             uiManager.getHud().isTimeUp()) {
-
-             uiManager.showResult(
-                     player != null ? player.getScore() : 0,
-                     player != null ? player.getCollectedCount() : 0,
-                     (stageManager != null && stageManager.getCurrentStage() != null)
-                             ? stageManager.getCurrentStage().getStageNumber()
-                             : 0,
-                     60
-             );
-         }
      }
  }
 
@@ -419,8 +410,10 @@ public class Game {
         }
 
         // 스테이지 렌더링
-        if (stageManager != null)
+        if (!isMultiplayer() && stageManager != null) {
             stageManager.render(g);
+        }
+
         
      // 🔥 서버에서 받은 적 렌더링
      // 🔥 서버에서 받은 적 렌더링
@@ -439,7 +432,7 @@ public class Game {
                         default -> rm.getImage("Boss1");
                     };
                 }
-                default -> img = rm.getImage("enemy");
+                default -> img = rm.getImage("스테이지1잡몸");
             }
 
             // ===============================
@@ -776,18 +769,11 @@ public class Game {
                 uiManager.hideResult();
 
                 // 현재 스테이지 번호 확인
-                int clearedStage = stageManager.getCurrentStage().getStageNumber();
-
-                // 🔥 서버에 Stage Clear 전송
-                if (network != null) {
-                    network.send("/clear/" + clearedStage);
-                    System.out.println("[Client] STAGE CLEAR 전송 → " + clearedStage);
-                }
+                uiManager.hideResult();
+                return;
 
                 // 🚫 startReadyCountdown(next) 호출 금지!!
                 // 서버가 "/stage/start/{next}" 패킷을 보내줄 때까지 대기
-
-                return;
             }
 
             return;
@@ -872,16 +858,21 @@ public class Game {
 
             else if (code == KeyEvent.VK_ENTER) {
 
-                if (gameOverIndex == 0) {
+            	if (gameOverIndex == 0) { // Restart
+            	    entityManager.clearAll();
+            	    netEnemies.clear();
+            	    netBullets.clear();
 
-                    entityManager.clearAll();
-                    stageManager = null;
-                    player = null;
-                    player2 = null;
-                    runStats.reset();
+            	    player = null;
+            	    player2 = null;
+            	    runStats.reset();
 
-                    state = GameState.MENU;
-                } else {
+            	    state = GameState.MENU;
+
+            	    if (network != null) {
+            	        network.send("/ready"); // 🔥 다시 준비
+            	    }
+            	} else {
                     System.exit(0);
                 }
             }
@@ -961,33 +952,24 @@ public class Game {
     // STAGE START (Stage1 / Stage2 / Stage3)
     // ============================================================
     private void startStage1() {
-    	//runStats.reset();   
-    	// ★ 새 판 시작할 때 통계 0으로 초기화
-    	if (!pendingEnemySpawns.isEmpty()) {
-    	    List<String> copy = new ArrayList<>(pendingEnemySpawns);
-    	    pendingEnemySpawns.clear();
 
-    	    for (String packet : copy) {
-    	        onNetworkPacket(packet);
-    	    }
-    	}
-    	
+        // 🔥 서버에서 받은 적 스폰 패킷 처리만
+        if (!pendingEnemySpawns.isEmpty()) {
+            List<String> copy = new ArrayList<>(pendingEnemySpawns);
+            pendingEnemySpawns.clear();
+            for (String packet : copy) {
+                onNetworkPacket(packet);
+            }
+        }
+
         setupPlayer();
-        uiManager = new UIManager(player, runStats,rm);
+        uiManager = new UIManager(player, runStats, rm);
 
-        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
-        s1.setNextStage(s2);
-        s2.setNextStage(s3);
-
-        stageManager = new StageManager(s1, uiManager);
-        stageManager.getCurrentStage().start();
-        
         audio.playBGM("game_music.wav");
 
-        System.out.println("[Game] Stage1 시작");
+        System.out.println("[Game] Stage1 시작 (MULTI)");
     }
+
 
     private void startStage2() {
     	//runStats.reset();             
@@ -1000,16 +982,6 @@ public class Game {
             audio.playBGM("game_music.wav");
             return;   // ❗ Stage2 로컬 로직 생성 금지
         }
-        
-        AbstractStage s1 = new Stage1(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s2 = new Stage2(entityManager, rm, player, uiManager, runStats);
-        AbstractStage s3 = new Stage3Boss(entityManager, rm, player, uiManager, runStats);
-       
-
-        s2.setNextStage(s3);
-
-        stageManager = new StageManager(s2, uiManager);
-        stageManager.getCurrentStage().start();
         
         audio.playBGM("game_music.wav");
 
@@ -1032,14 +1004,6 @@ public class Game {
             return;
         }
 
-        // ─────────────────────────────
-        // ❌ 싱글 플레이 전용 로직
-        // ─────────────────────────────
-        AbstractStage s3 =
-                new Stage3Boss(entityManager, rm, player, uiManager, runStats);
-
-        stageManager = new StageManager(s3, uiManager);
-        stageManager.getCurrentStage().start();
 
         audio.playBGM("boss_stage_music.wav");
 
@@ -1064,29 +1028,6 @@ public class Game {
         playArea.setBounds(leftWidth, 0, centerWidth, totalHeight);
 
         int startY = totalHeight - 120;
-
-        // ─────────────────────────────
-        // 싱글 모드
-        // ─────────────────────────────
-        if (!coopMode) {
-            int startX = leftWidth + centerWidth / 2 - 24;
-
-            if (player == null) {
-                player = new Player(PlayerIndex.P1)
-                        .withSprite(rm.getImage("player"))
-                        .withPlayArea(playArea)
-                        .withPosition(startX, startY)
-                        .switchWeapon(new Weapon(BulletType.BASIC));
-            } else {
-                player.setPlayArea(playArea);
-                player.setPosition(startX, startY);
-            }
-            
-            player.setEntityManager(entityManager);
-            
-            entityManager.add(player);
-            return;   // 여기서 끝
-        }
 
         // ─────────────────────────────
         // 코옵 모드 (P1 + P2)
@@ -1136,7 +1077,21 @@ public class Game {
  // 🔥 멀티플레이 패킷 처리 (서버 → 클라이언트)
  // ============================================================
  public void onNetworkPacket(String p) {
+	 
+	 if (p.equals("/gameover")) {
 
+		    System.out.println("[NET] GAME OVER (ALL PLAYERS DEAD)");
+
+		    finalClear = false;           // 클리어 아님
+		    state = GameState.GAME_OVER;  // 🔥 기존 UI 재사용
+
+		    // 입력 방지 / 정리
+		    inputX = inputY = inputFire = 0;
+
+		    return;
+		}
+
+	 
      // -------------------------
      // 플레이어 ID 배정
      // -------------------------
@@ -1187,7 +1142,6 @@ public class Game {
      if (p.startsWith("/enemy/spawn/")) {
     	    try {
     	        if (player == null) {
-    	            System.out.println("[NET] player not ready → spawn queued");
     	            pendingEnemySpawns.add(p);
     	            return;
     	        }
@@ -1195,17 +1149,10 @@ public class Game {
     	        String[] t = p.split("/");
 
     	        int id = Integer.parseInt(t[3]);
-    	        String type = t[4]; // ★ 이 타입 저장해야함!
+    	        String type = t[4];
     	        double x = Double.parseDouble(t[5]);
     	        double y = Double.parseDouble(t[6]);
 
-    	        System.out.println("[NET] Enemy spawn: id=" + id +
-    	                           " type=" + type +
-    	                           " x=" + x + " y=" + y);
-
-    	        // -----------------------------------------
-    	        // ★ 서버에서 온 적을 NetEnemy로 저장
-    	        // -----------------------------------------
     	        NetEnemy ne = new NetEnemy();
     	        ne.id = id;
     	        ne.type = type;
@@ -1213,18 +1160,39 @@ public class Game {
     	        ne.y = y;
     	        ne.hp = 100;
 
-    	        // ★ boss면 페이즈 1부터 시작
-    	        if ("boss".equals(type)) {
-    	            ne.phase = 1;
+    	        // =====================================
+    	        // 🔥 타입별 크기 / 이미지 결정
+    	        // =====================================
+    	        switch (type) {
+
+    	            case "stage1" -> {
+    	                ne.w = 150;
+    	                ne.h = 120;
+    	                ne.sprite = rm.getImage("스테이지2잡몸");
+    	            }
+
+    	            case "stage2" -> {
+    	                ne.w = 200;
+    	                ne.h = 130;
+    	                ne.sprite = rm.getImage("스테이지1잡몸");
+    	            }
+
+    	            case "boss" -> {
+    	                ne.w = 160;
+    	                ne.h = 160;
+    	                ne.sprite = rm.getImage("boss");
+    	                ne.phase = 1;
+    	            }
     	        }
+
     	        netEnemies.put(id, ne);
 
     	    } catch (Exception ex) {
     	        ex.printStackTrace();
-    	        System.out.println("[NET] spawn parse error: " + p);
     	    }
     	    return;
     	}
+
 
      if (p.startsWith("/boss/phase/")) {
     	    int phase = Integer.parseInt(p.split("/")[3]);
@@ -1260,13 +1228,44 @@ public class Game {
      // 스테이지 시작 패킷
      // -------------------------
      if (p.startsWith("/stage/start/")) {
-    	 coopMode = true;
-         try {
-             int stage = Integer.parseInt(p.split("/")[3]);
-             startReadyCountdown(stage);
-         } catch (Exception e) { }
-         return;
-     }
+    	    coopMode = true;
+    	    try {
+    	        String[] t = p.split("/");
+
+    	        int stage = Integer.parseInt(t[3]); // ✅ 여기까지만 있음
+
+    	        // HUD 보스 여부만 처리
+    	        if (uiManager != null && uiManager.getHud() != null) {
+    	            uiManager.getHud().setBossStage(stage == 3);
+    	        }
+
+    	        // READY 카운트다운 시작
+    	        startReadyCountdown(stage);
+
+    	        System.out.println("[NET] Stage " + stage + " start");
+
+    	    } catch (Exception e) {
+    	        System.out.println("[NET] stage/start parse error: " + p);
+    	    }
+    	    return;
+    	}
+     	
+     if (p.startsWith("/score/")) {
+    	    try {
+    	        String[] t = p.split("/");
+    	        int score = Integer.parseInt(t[2]);
+
+    	        // 🔥 두 플레이어 모두 동일 점수
+    	        if (player != null)  player.setScore(score);
+    	        if (player2 != null) player2.setScore(score);
+
+    	    } catch (Exception e) {
+    	        System.out.println("[NET] score parse error: " + p);
+    	    }
+    	    return;
+    	}
+     
+
      
      if (p.startsWith("/gameclear")) {
     	    finalClear = true;
@@ -1376,6 +1375,26 @@ public class Game {
     	    }
     	    return;
     	}
+    	
+    	if (p.startsWith("/stage/time/")) {
+    	    try {
+    	        String[] t = p.split("/");
+
+    	        int remain = Integer.parseInt(t[3]); // ✅ 남은 시간만 있음
+
+    	        serverRemainTime = remain;
+
+    	        if (uiManager != null && uiManager.getHud() != null) {
+    	            uiManager.getHud().setRemainingTimeFromServer(remain);
+    	        }
+
+    	    } catch (Exception e) {
+    	        System.out.println("[NET] stage/time parse error: " + p);
+    	    }
+    	    return;
+    	}
+
+
 
      
   // -------------------------
@@ -1406,12 +1425,6 @@ public class Game {
           boss.y = y;
           boss.hp = hp;
 
-          // 💡 HP 비율 기반 Phase 계산
-          double rate = hp / (double) maxHp;
-          if (rate <= 0.33) boss.phase = 3;
-          else if (rate <= 0.66) boss.phase = 2;
-          else boss.phase = 1;
-
           // 🔥🔥🔥 여기 추가 🔥🔥🔥
           if (uiManager != null && uiManager.getHud() != null) {
               uiManager.getHud().setBossStage(true); // TIME 대신 보스 HUD
@@ -1432,6 +1445,28 @@ public class Game {
       }
       return;
   }
+  
+  if (p.startsWith("/boss/pattern/phase3/electricwave")) {
+	    entityManager.add(new ElectricWave(
+	        playArea.x,
+	        playArea.y,
+	        playArea.width,
+	        playArea.height,
+	        700
+	    ));
+	    return;
+	}
+
+	if (p.startsWith("/boss/pattern/phase3/orb")) {
+	    // 서버에서 총알은 이미 spawn됨
+	    // 여기서는 연출만 추가 가능
+	    entityManager.add(
+	        new WavePrompt("⚡ 거대 구체 발사!", 800)
+	    );
+	    return;
+	}
+
+
 
      
      
@@ -1443,10 +1478,9 @@ public class Game {
 	}
  	
  	public static boolean isMultiplayer() {
- 	    return coopMode; 
+ 	    return true;
  	}
 
-    
     
     
 }

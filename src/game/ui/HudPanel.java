@@ -39,6 +39,7 @@ public class HudPanel {
     private Integer bossMaxHp = null;
     private Integer bossPhase = null;
     
+    private int remainingTimeFromServer = -1;
     // 공용 리소스 매니저
     private static final ResourceManager RM = new ResourceManager();
 
@@ -48,6 +49,12 @@ public class HudPanel {
         loadFonts();
         loadIcons();
     }
+    
+    public void setRemainingTimeFromServer(int sec) {
+        this.remainingTimeFromServer = Math.max(0, sec);
+    }
+
+    
     
     public void pauseTimer() {
         if (!paused) {
@@ -110,6 +117,8 @@ public class HudPanel {
     // ===========================================================
     public void setTotalTime(int seconds) { this.totalTime = seconds; }
     public void resetTimer() { this.stageStartTime = System.currentTimeMillis(); }
+    
+    /*
     public int getRemainingTime() {
 
         long now = System.currentTimeMillis();
@@ -128,7 +137,13 @@ public class HudPanel {
     }
     
     public boolean isTimeUp() { return getRemainingTime() <= 0; }
-
+    */
+    public boolean isTimeUp() {
+        if (remainingTimeFromServer >= 0) {
+            return remainingTimeFromServer <= 0;
+        }
+        return false;
+    }
     private String formatTime(int sec) {
         int min = sec / 60;
         int s = sec % 60;
@@ -312,7 +327,14 @@ public class HudPanel {
 
         g.setFont(orbitronFont.deriveFont(Font.BOLD, 20f));
         g.setColor(Color.WHITE);
-        String timeStr = "TIME " + formatTime(getRemainingTime());
+        String timeStr;
+
+        if (remainingTimeFromServer >= 0) {
+            timeStr = "TIME " + formatTime(remainingTimeFromServer);
+        } else {
+            timeStr = "TIME --:--";
+        }
+        
         int textWidth = g.getFontMetrics().stringWidth(timeStr);
         int textX = boxX + (boxW - textWidth) / 2;
         int textY = boxY + 33;
