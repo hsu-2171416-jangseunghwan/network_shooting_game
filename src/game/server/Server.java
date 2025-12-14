@@ -127,10 +127,18 @@ public class Server {
     // ======================
     // DAMAGE TUNING
     // ======================
+    /*
     private static final int ENEMY_CONTACT_DAMAGE = 10;
     private static final int ENEMY_BULLET_DAMAGE  = 5;
     private static final int BOSS_CONTACT_DAMAGE  = 20;
- 
+    */
+    
+   
+    private static final int ENEMY_CONTACT_DAMAGE = 1;
+    private static final int ENEMY_BULLET_DAMAGE  = 1;
+    private static final int BOSS_CONTACT_DAMAGE  = 1;
+
+    
  // ======================
  // PLAY AREA (CLIENT SYNC)
  // ======================
